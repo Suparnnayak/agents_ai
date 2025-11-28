@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: hospital-agent-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python agent_api_server.py
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: HOST
+        value: 0.0.0.0
+      - key: AGENT_PREDICTION_API_URL
+        value: https://ai-health-agent-vuol.onrender.com/predict
+      - key: AGENT_OLLAMA_BASE_URL
+        value: http://localhost:11434
+      - key: AGENT_OLLAMA_MODEL
+        value: phi3
+      - key: AGENT_TEMPERATURE
+        value: 0.1
+    healthCheckPath: /agents/health
+    plan: starter  # Change to 'free' for free tier (will spin down)
+

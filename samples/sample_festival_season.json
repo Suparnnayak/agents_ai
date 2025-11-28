@@ -1,0 +1,26 @@
+{
+  "mode": "ensemble",
+  "data": [
+    {
+      "date": "2025-12-05",
+      "admissions": 250,
+      "aqi": 180,
+      "temp": 28.0,
+      "humidity": 65,
+      "rainfall": 2.0,
+      "wind_speed": 8.0,
+      "mobility_index": 85,
+      "outbreak_index": 40,
+      "festival_flag": 1,
+      "holiday_flag": 1,
+      "weekday": 6,
+      "is_weekend": 1,
+      "population_density": 15000,
+      "hospital_beds": 650,
+      "staff_count": 280,
+      "city_id": 2,
+      "hospital_id_enc": 222
+    }
+  ]
+}
+
