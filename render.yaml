@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: hospital-forecast-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python api_server.py
+    envVars:
+      - key: PREDICTION_MODE
+        value: ensemble
+      - key: TFT_WEIGHT
+        value: 0.6
+      - key: PORT
+        value: 10000
+      - key: HOST
+        value: 0.0.0.0
+    healthCheckPath: /health
+    plan: starter  # Change to 'standard' or 'pro' for production
+

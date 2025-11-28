@@ -18,6 +18,7 @@ logger = get_logger(__name__)
 # Configuration
 DEFAULT_MODE = os.getenv("PREDICTION_MODE", "ensemble")
 DEFAULT_WEIGHT_TFT = float(os.getenv("TFT_WEIGHT", "0.6"))
+# Render automatically sets PORT environment variable
 PORT = int(os.getenv("PORT", "5000"))
 HOST = os.getenv("HOST", "0.0.0.0")
 
