@@ -57,23 +57,37 @@ def health():
         huggingface_key = os.getenv("HUGGINGFACE_API_KEY", "").strip()
         together_key = os.getenv("TOGETHER_API_KEY", "").strip()
         
+        # Determine active provider based on priority (matches llm_client.py)
         llm_provider = "ollama"  # default
+        active_keys = []
+        
         if groq_key:
             llm_provider = "groq"
-        elif gemini_key:
-            llm_provider = "gemini"
-        elif openai_key:
-            llm_provider = "openai"
-        elif huggingface_key:
-            llm_provider = "huggingface"
-        elif together_key:
-            llm_provider = "together"
+            active_keys.append("GROQ_API_KEY")
+        if gemini_key:
+            if llm_provider == "ollama":
+                llm_provider = "gemini"
+            active_keys.append("GOOGLE_API_KEY")
+        if openai_key:
+            if llm_provider == "ollama":
+                llm_provider = "openai"
+            active_keys.append("OPENAI_API_KEY")
+        if huggingface_key:
+            if llm_provider == "ollama":
+                llm_provider = "huggingface"
+            active_keys.append("HUGGINGFACE_API_KEY")
+        if together_key:
+            if llm_provider == "ollama":
+                llm_provider = "together"
+            active_keys.append("TOGETHER_API_KEY")
         
         return jsonify({
             "status": "healthy",
             "service": "hospital-agent-api",
             "timestamp": datetime.now().isoformat(),
             "llm_provider": llm_provider,
+            "active_keys": active_keys,  # Show all keys that are set
+            "priority_order": "Groq > Gemini > OpenAI > Hugging Face > Together.ai > Ollama",
             "ollama_url": str(settings.ollama_base_url),
             "ollama_model": settings.ollama_model,
             "prediction_api": str(settings.prediction_api_url),
