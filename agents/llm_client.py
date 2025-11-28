@@ -58,11 +58,12 @@ class LLMClient:
                 self.llm = ChatGoogleGenerativeAI(
                     model="gemini-1.5-flash",  # Fast and free tier friendly
                     google_api_key=gemini_api_key,
-                    temperature=settings.temperature
+                    temperature=settings.temperature,
+                    convert_system_message_to_human=True  # Better compatibility
                 )
                 print("✅ Using Google Gemini for LLM")
-            except ImportError:
-                print("⚠️  langchain-google-genai not installed, falling back to Ollama")
+            except ImportError as e:
+                print(f"⚠️  langchain-google-genai not installed: {e}")
                 print("   Install with: pip install langchain-google-genai")
                 self.llm = Ollama(
                     model=settings.ollama_model,
@@ -71,6 +72,8 @@ class LLMClient:
                 )
             except Exception as e:
                 print(f"⚠️  Gemini setup failed: {e}, falling back to Ollama")
+                import traceback
+                print(f"   Traceback: {traceback.format_exc()}")
                 self.llm = Ollama(
                     model=settings.ollama_model,
                     temperature=settings.temperature,
@@ -151,20 +154,41 @@ class LLMClient:
             partial_variables={"format_instructions": parser.get_format_instructions()},
         )
         formatted = prompt.format(**prompt_kwargs)
-        raw_output = self.llm.invoke(formatted)
+        
         try:
-            return parser.parse(raw_output)
-        except OutputParserException:
-            repaired = _extract_json_candidate(raw_output)
-            if not repaired:
-                raise
+            raw_output = self.llm.invoke(formatted)
+            
+            # Handle different response formats (Gemini, OpenAI, etc.)
+            if hasattr(raw_output, 'content'):
+                # Gemini returns AIMessage with .content attribute
+                text_output = raw_output.content
+            elif isinstance(raw_output, str):
+                # Direct string response
+                text_output = raw_output
+            else:
+                # Try to convert to string
+                text_output = str(raw_output)
+            
             try:
-                data = json.loads(repaired)
-            except json.JSONDecodeError as exc:
-                raise OutputParserException(
-                    f"Failed to repair JSON output: {repaired}"
-                ) from exc
-            return schema.model_validate(data)
+                return parser.parse(text_output)
+            except OutputParserException:
+                repaired = _extract_json_candidate(text_output)
+                if not repaired:
+                    raise OutputParserException(
+                        f"Failed to extract JSON from LLM output. Raw output: {text_output[:200]}..."
+                    )
+                try:
+                    data = json.loads(repaired)
+                except json.JSONDecodeError as exc:
+                    raise OutputParserException(
+                        f"Failed to repair JSON output: {repaired}"
+                    ) from exc
+                return schema.model_validate(data)
+        except Exception as e:
+            # Better error handling
+            error_msg = f"LLM generation failed: {str(e)}"
+            print(f"❌ {error_msg}")
+            raise OutputParserException(error_msg) from e
 
 
 llm_client = LLMClient()
