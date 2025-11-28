@@ -53,15 +53,40 @@ class LLMClient:
         
         if gemini_api_key:
             # Use Google Gemini (free tier available, good quality)
+            # Try multiple model names in order of preference
+            gemini_models = [
+                "gemini-1.5-pro",      # Latest stable
+                "gemini-1.5-flash",    # Fast model
+                "gemini-pro",           # Legacy model
+                "gemini-2.5-pro"        # Very latest (may not be available)
+            ]
+            
+            gemini_llm = None
+            last_error = None
+            
             try:
                 from langchain_google_genai import ChatGoogleGenerativeAI
-                self.llm = ChatGoogleGenerativeAI(
-                    model="gemini-pro",  # Standard Gemini model (available in v1beta)
-                    google_api_key=gemini_api_key,
-                    temperature=settings.temperature,
-                    convert_system_message_to_human=True  # Better compatibility
-                )
-                print("✅ Using Google Gemini for LLM")
+                
+                for model_name in gemini_models:
+                    try:
+                        gemini_llm = ChatGoogleGenerativeAI(
+                            model=model_name,
+                            google_api_key=gemini_api_key,
+                            temperature=settings.temperature,
+                            convert_system_message_to_human=True
+                        )
+                        # Test if model works by checking if it can be instantiated
+                        print(f"✅ Using Google Gemini ({model_name}) for LLM")
+                        self.llm = gemini_llm
+                        break
+                    except Exception as e:
+                        last_error = e
+                        print(f"⚠️  Gemini model {model_name} failed: {str(e)[:100]}")
+                        continue
+                
+                if gemini_llm is None:
+                    raise Exception(f"All Gemini models failed. Last error: {last_error}")
+                    
             except ImportError as e:
                 print(f"⚠️  langchain-google-genai not installed: {e}")
                 print("   Install with: pip install langchain-google-genai")
@@ -71,9 +96,9 @@ class LLMClient:
                     base_url=settings.ollama_base_url,
                 )
             except Exception as e:
-                print(f"⚠️  Gemini setup failed: {e}, falling back to Ollama")
-                import traceback
-                print(f"   Traceback: {traceback.format_exc()}")
+                print(f"⚠️  Gemini setup failed: {e}")
+                print("   💡 Tip: Try Hugging Face (free) or OpenAI instead")
+                print("   Set HUGGINGFACE_API_KEY or OPENAI_API_KEY environment variable")
                 self.llm = Ollama(
                     model=settings.ollama_model,
                     temperature=settings.temperature,
