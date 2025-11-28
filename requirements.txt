@@ -42,6 +42,7 @@ pydantic-settings>=2.2.1
 requests>=2.31.0  # For keep-alive script
 
 # Optional: Cloud LLM support (install if using cloud LLM instead of Ollama)
+langchain-google-genai>=1.0.0  # For Google Gemini support (free tier available - recommended!)
 # langchain-openai>=0.1.0  # For OpenAI support (recommended - $5 free credit)
 # langchain-huggingface>=0.0.1  # For Hugging Face support (100% free tier)
 # langchain-together>=0.1.0  # For Together.ai support (requires credits)

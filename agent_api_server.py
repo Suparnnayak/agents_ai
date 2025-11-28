@@ -51,12 +51,15 @@ def health():
         
         # Check which LLM is configured
         import os
+        gemini_key = os.getenv("GOOGLE_API_KEY", "").strip()
         openai_key = os.getenv("OPENAI_API_KEY", "").strip()
         huggingface_key = os.getenv("HUGGINGFACE_API_KEY", "").strip()
         together_key = os.getenv("TOGETHER_API_KEY", "").strip()
         
         llm_provider = "ollama"  # default
-        if openai_key:
+        if gemini_key:
+            llm_provider = "gemini"
+        elif openai_key:
             llm_provider = "openai"
         elif huggingface_key:
             llm_provider = "huggingface"
