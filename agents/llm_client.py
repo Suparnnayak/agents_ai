@@ -56,7 +56,7 @@ class LLMClient:
             try:
                 from langchain_google_genai import ChatGoogleGenerativeAI
                 self.llm = ChatGoogleGenerativeAI(
-                    model="gemini-1.5-flash",  # Fast and free tier friendly
+                    model="gemini-pro",  # Standard Gemini model (available in v1beta)
                     google_api_key=gemini_api_key,
                     temperature=settings.temperature,
                     convert_system_message_to_human=True  # Better compatibility
