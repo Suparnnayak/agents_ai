@@ -49,15 +49,18 @@ def health():
     try:
         settings = get_settings()
         
-        # Check which LLM is configured
+        # Check which LLM is configured (priority order matches llm_client.py)
         import os
+        groq_key = os.getenv("GROQ_API_KEY", "").strip()
         gemini_key = os.getenv("GOOGLE_API_KEY", "").strip()
         openai_key = os.getenv("OPENAI_API_KEY", "").strip()
         huggingface_key = os.getenv("HUGGINGFACE_API_KEY", "").strip()
         together_key = os.getenv("TOGETHER_API_KEY", "").strip()
         
         llm_provider = "ollama"  # default
-        if gemini_key:
+        if groq_key:
+            llm_provider = "groq"
+        elif gemini_key:
             llm_provider = "gemini"
         elif openai_key:
             llm_provider = "openai"

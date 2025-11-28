@@ -35,13 +35,16 @@ class LLMClient:
     def __init__(self):
         settings = get_settings()
         
-        # Check for cloud LLM API keys (priority order: Gemini, OpenAI, then others)
+        # Check for cloud LLM API keys (priority order: Groq, Gemini, OpenAI, then others)
+        groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
         gemini_api_key = os.getenv("GOOGLE_API_KEY", "").strip()
         openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
         huggingface_api_key = os.getenv("HUGGINGFACE_API_KEY", "").strip()
         together_api_key = os.getenv("TOGETHER_API_KEY", "").strip()
         
         # Debug: Check which keys are set (without exposing values)
+        if groq_api_key:
+            print(f"✅ Groq API key detected (length: {len(groq_api_key)})")
         if gemini_api_key:
             print(f"✅ Google Gemini API key detected (length: {len(gemini_api_key)})")
         if openai_api_key:
@@ -51,7 +54,27 @@ class LLMClient:
         if together_api_key:
             print(f"✅ Together.ai API key detected")
         
-        if gemini_api_key:
+        # Try providers in priority order, but don't fall back to Ollama if cloud providers fail
+        # (Ollama doesn't work on Render - it needs local installation)
+        self.llm = None
+        
+        # Groq is first - it's fast, free tier, and very reliable!
+        if groq_api_key:
+            try:
+                from langchain_groq import ChatGroq
+                self.llm = ChatGroq(
+                    model="llama-3.1-70b-versatile",  # Fast and free tier friendly
+                    groq_api_key=groq_api_key,
+                    temperature=settings.temperature
+                )
+                print("✅ Using Groq for LLM (FAST & FREE)")
+            except ImportError:
+                print("⚠️  langchain-groq not installed, continuing...")
+                print("   Install with: pip install langchain-groq")
+            except Exception as e:
+                print(f"⚠️  Groq setup failed: {e}, continuing...")
+        
+        if self.llm is None and gemini_api_key:
             # Use Google Gemini (free tier available, good quality)
             # Try multiple model names in order of preference
             gemini_models = [
@@ -85,26 +108,21 @@ class LLMClient:
                         continue
                 
                 if gemini_llm is None:
-                    raise Exception(f"All Gemini models failed. Last error: {last_error}")
+                    print(f"⚠️  All Gemini models failed. Last error: {last_error}")
+                    print("   Continuing to check other providers...")
+                    # Don't set self.llm here - let it fall through to other providers
                     
             except ImportError as e:
                 print(f"⚠️  langchain-google-genai not installed: {e}")
-                print("   Install with: pip install langchain-google-genai")
-                self.llm = Ollama(
-                    model=settings.ollama_model,
-                    temperature=settings.temperature,
-                    base_url=settings.ollama_base_url,
-                )
+                print("   Continuing to check other providers...")
+                # Don't set self.llm here - let it fall through to other providers
             except Exception as e:
                 print(f"⚠️  Gemini setup failed: {e}")
-                print("   💡 Tip: Try Hugging Face (free) or OpenAI instead")
-                print("   Set HUGGINGFACE_API_KEY or OPENAI_API_KEY environment variable")
-                self.llm = Ollama(
-                    model=settings.ollama_model,
-                    temperature=settings.temperature,
-                    base_url=settings.ollama_base_url,
-                )
-        elif openai_api_key:
+                print("   Continuing to check other providers...")
+                # Don't set self.llm here - let it fall through to other providers
+        
+        # Check if Gemini was successfully set, if not try other providers
+        if self.llm is None and openai_api_key:
             # Use OpenAI (recommended - has free credit)
             try:
                 from langchain_openai import ChatOpenAI
@@ -115,13 +133,12 @@ class LLMClient:
                 )
                 print("✅ Using OpenAI for LLM")
             except ImportError:
-                print("⚠️  langchain-openai not installed, falling back to Ollama")
-                self.llm = Ollama(
-                    model=settings.ollama_model,
-                    temperature=settings.temperature,
-                    base_url=settings.ollama_base_url,
-                )
-        elif huggingface_api_key:
+                print("⚠️  langchain-openai not installed, continuing...")
+            except Exception as e:
+                print(f"⚠️  OpenAI setup failed: {e}, continuing...")
+        
+        # If OpenAI didn't work, try Hugging Face
+        if self.llm is None and huggingface_api_key:
             # Use Hugging Face Inference API (FREE tier available)
             try:
                 from langchain_community.llms import HuggingFaceEndpoint
@@ -132,13 +149,12 @@ class LLMClient:
                 )
                 print("✅ Using Hugging Face Inference API for LLM (FREE)")
             except ImportError:
-                print("⚠️  Hugging Face not available, falling back to Ollama")
-                self.llm = Ollama(
-                    model=settings.ollama_model,
-                    temperature=settings.temperature,
-                    base_url=settings.ollama_base_url,
-                )
-        elif together_api_key:
+                print("⚠️  langchain-community not installed, continuing...")
+            except Exception as e:
+                print(f"⚠️  Hugging Face setup failed: {e}, continuing...")
+        
+        # If Hugging Face didn't work, try Together.ai
+        if self.llm is None and together_api_key:
             # Use Together.ai (cheapest cloud LLM)
             try:
                 from langchain_together import Together
@@ -149,20 +165,31 @@ class LLMClient:
                 )
                 print("✅ Using Together.ai for LLM")
             except ImportError:
-                print("⚠️  langchain-together not installed, falling back to Ollama")
+                print("⚠️  langchain-together not installed, continuing...")
+            except Exception as e:
+                print(f"⚠️  Together.ai setup failed: {e}, continuing...")
+        
+        # Final fallback: Only use Ollama if no cloud providers worked
+        # AND we're not on Render (Ollama doesn't work on Render)
+        if self.llm is None:
+            # Check if we're on Render (common environment variable)
+            is_render = os.getenv("RENDER", "").lower() == "true" or "render.com" in str(settings.ollama_base_url)
+            
+            if is_render:
+                raise RuntimeError(
+                    "❌ No working LLM provider found!\n"
+                    "   Cloud LLM providers (Groq, Gemini, OpenAI, Hugging Face, Together.ai) all failed.\n"
+                    "   Ollama doesn't work on Render (requires local installation).\n"
+                    "   Please set one of: GROQ_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY, HUGGINGFACE_API_KEY, or TOGETHER_API_KEY"
+                )
+            else:
+                # Local development - use Ollama
                 self.llm = Ollama(
                     model=settings.ollama_model,
                     temperature=settings.temperature,
                     base_url=settings.ollama_base_url,
                 )
-        else:
-            # Fallback to Ollama (local or remote)
-            self.llm = Ollama(
-                model=settings.ollama_model,
-                temperature=settings.temperature,
-                base_url=settings.ollama_base_url,
-            )
-            print(f"✅ Using Ollama ({settings.ollama_model}) for LLM")
+                print(f"✅ Using Ollama ({settings.ollama_model}) for LLM (local dev)")
 
     def generate_structured(
         self,
