@@ -286,6 +286,11 @@ def index():
 
 
 if __name__ == "__main__":
-    logger.info(f"🚀 Starting Agent API server on {HOST}:{PORT}")
-    app.run(host=HOST, port=PORT, debug=False)
+    # Use Gunicorn in production (Render), Flask dev server locally
+    if os.getenv("RENDER") or os.getenv("DYNO"):  # Render/Heroku detection
+        # Gunicorn will be used via Procfile or start command
+        logger.info(f"🚀 Production mode - Gunicorn will start the server")
+    else:
+        logger.info(f"🚀 Starting Agent API server on {HOST}:{PORT}")
+        app.run(host=HOST, port=PORT, debug=False)
 
