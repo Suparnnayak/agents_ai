@@ -48,10 +48,26 @@ def health():
     """Health check endpoint."""
     try:
         settings = get_settings()
+        
+        # Check which LLM is configured
+        import os
+        openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+        huggingface_key = os.getenv("HUGGINGFACE_API_KEY", "").strip()
+        together_key = os.getenv("TOGETHER_API_KEY", "").strip()
+        
+        llm_provider = "ollama"  # default
+        if openai_key:
+            llm_provider = "openai"
+        elif huggingface_key:
+            llm_provider = "huggingface"
+        elif together_key:
+            llm_provider = "together"
+        
         return jsonify({
             "status": "healthy",
             "service": "hospital-agent-api",
             "timestamp": datetime.now().isoformat(),
+            "llm_provider": llm_provider,
             "ollama_url": str(settings.ollama_base_url),
             "ollama_model": settings.ollama_model,
             "prediction_api": str(settings.prediction_api_url),
