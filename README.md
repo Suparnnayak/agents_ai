@@ -486,39 +486,53 @@ python keep_alive.py
 
 ---
 
-## ⚙️ Automation
+## ⚙️ Full Automation (Zero Manual Intervention)
 
-### GitHub Actions (Free)
+### Quick Setup - GitHub Actions (Recommended)
 
-Already configured in `.github/workflows/run_agents.yml`:
+**Fully automated pipeline - runs daily, saves results, sends notifications!**
 
-```yaml
-# Runs daily at 8 AM UTC
-on:
-  schedule:
-    - cron: '0 8 * * *'
-```
+1. **Add Secrets to GitHub:**
+   - Go to: Repository → Settings → Secrets and variables → Actions
+   - Add these secrets:
+     - `AGENT_API_URL` = `https://agents-ai-hfpb.onrender.com/agents/run`
+     - `ML_API_URL` = `https://ai-health-agent-vuol.onrender.com/predict`
+     - `HOSPITAL_ID` = `HOSP-123`
+     - `DISEASE_SENSITIVITY` = `0.5`
+     - `DATA_SOURCE` = `sample` (or `api`/`file`)
 
-**Setup:**
-1. Add secrets to GitHub:
-   - `AGENT_API_URL` = Your deployed agent API URL
-   - `HOSPITAL_ID` = Your hospital ID
-2. Workflow runs automatically
+2. **Push Code:**
+   ```bash
+   git add .
+   git commit -m "Setup automation"
+   git push
+   ```
 
-### Python Script
+3. **Done!** ✅
+   - Runs automatically daily at 8 AM UTC
+   - Saves results to `plans/` directory
+   - Uploads as GitHub artifacts
+   - Commits results to repo
+
+**Manual Trigger:** Go to Actions tab → "Run Agents Daily" → "Run workflow"
+
+### Other Automation Options
+
+- **Render Cron Jobs** - Free tier available
+- **Local Cron** - Linux/Mac: `crontab -e`
+- **Windows Task Scheduler** - Built-in scheduler
+- **Cloud Schedulers** - AWS, GCP, Azure
+
+**See `AUTOMATION_GUIDE.md` for complete setup instructions!**
+
+### Run Manually
 
 ```bash
+# Using the fully automated script
+python auto_run_agents.py
+
+# Or using the simple script
 python automate_agents.py
-```
-
-### Cron Job
-
-```bash
-# Edit crontab
-crontab -e
-
-# Add line (runs daily at 8 AM)
-0 8 * * * cd /path/to/project && python automate_agents.py
 ```
 
 ---

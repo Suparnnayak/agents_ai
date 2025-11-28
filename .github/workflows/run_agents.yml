@@ -1,48 +1,83 @@
-name: Run Agents Daily
+name: Run Agents Daily - Fully Automated
 
 on:
   schedule:
     # Run daily at 8 AM UTC (adjust timezone as needed)
-    - cron: '0 8 * * *'
+    # Format: minute hour day month weekday
+    - cron: '0 8 * * *'  # 8 AM UTC daily
+    # Examples:
+    # - cron: '0 0 * * *'  # Midnight UTC
+    # - cron: '0 12 * * *'  # Noon UTC
+    # - cron: '0 */6 * * *'  # Every 6 hours
   workflow_dispatch:  # Allows manual trigger from GitHub UI
+  push:
+    branches:
+      - main
+    paths:
+      - 'auto_run_agents.py'
+      - '.github/workflows/run_agents.yml'
 
 jobs:
   run-agents:
     runs-on: ubuntu-latest
+    timeout-minutes: 10  # Fail if takes longer than 10 minutes
+    
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+          cache: 'pip'
       
       - name: Install dependencies
         run: |
+          pip install --upgrade pip
           pip install requests
       
-      - name: Run agents
+      - name: Run fully automated agent pipeline
         env:
           AGENT_API_URL: ${{ secrets.AGENT_API_URL }}
-          HOSPITAL_ID: ${{ secrets.HOSPITAL_ID || 'HOSP-123' }}
+          ML_API_URL: ${{ secrets.ML_API_URL }}
+          HOSPITAL_ID: ${{ secrets.HOSPITAL_ID }}
           DISEASE_SENSITIVITY: ${{ secrets.DISEASE_SENSITIVITY || '0.5' }}
+          DATA_SOURCE: ${{ secrets.DATA_SOURCE || 'sample' }}
+          DATA_API_URL: ${{ secrets.DATA_API_URL }}
+          DATA_FILE_PATH: ${{ secrets.DATA_FILE_PATH }}
+          NOTIFICATION_WEBHOOK: ${{ secrets.NOTIFICATION_WEBHOOK }}
+          OUTPUT_DIR: plans
         run: |
-          python automate_agents.py
+          python auto_run_agents.py
       
-      - name: Upload results
-        uses: actions/upload-artifact@v3
+      - name: Upload results as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: agent-plans
+          name: agent-plans-${{ github.run_number }}
           path: plans/
-          retention-days: 30
+          retention-days: 90
+          if-no-files-found: warn
       
-      - name: Commit results (optional)
+      - name: Commit results to repository
         if: success()
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add plans/
-          git commit -m "Auto-generated plan $(date +%Y-%m-%d)" || exit 0
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add plans/ || exit 0
+          git diff --staged --quiet || git commit -m "🤖 Auto-generated plan $(date +%Y-%m-%d-%H%M%S)" || exit 0
           git push || exit 0
+      
+      - name: Create summary
+        if: always()
+        run: |
+          echo "## 🤖 Agent Pipeline Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Run Time:** $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -d "plans" ]; then
+            echo "**Plans Generated:** $(ls -1 plans/*.json 2>/dev/null | wc -l)" >> $GITHUB_STEP_SUMMARY
+          fi
 
