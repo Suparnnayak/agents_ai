@@ -59,15 +59,25 @@ class LLMClient:
         self.llm = None
         
         # Groq is first - it's fast, free tier, and very reliable!
+        # NOTE: Groq periodically deprecates model IDs. Use a CURRENTLY SUPPORTED model.
+        # See: https://console.groq.com/docs/models for the latest list.
         if groq_api_key:
             try:
                 from langchain_groq import ChatGroq
-                self.llm = ChatGroq(
-                    model="llama-3.1-70b-versatile",  # Fast and free tier friendly
-                    groq_api_key=groq_api_key,
-                    temperature=settings.temperature
+
+                # Use a modern Groq Llama 3.1 model that is supported as of late 2025.
+                # If Groq deprecates this in future, update the model name here only.
+                groq_model = os.getenv(
+                    "GROQ_MODEL_NAME",
+                    "llama-3.1-8b-instant",  # default, cheap and fast
                 )
-                print("✅ Using Groq for LLM (FAST & FREE)")
+
+                self.llm = ChatGroq(
+                    model=groq_model,
+                    groq_api_key=groq_api_key,
+                    temperature=settings.temperature,
+                )
+                print(f"✅ Using Groq for LLM: {groq_model}")
             except ImportError:
                 print("⚠️  langchain-groq not installed, continuing...")
                 print("   Install with: pip install langchain-groq")
