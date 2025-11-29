@@ -76,6 +76,8 @@ class LLMClient:
                     model=groq_model,
                     groq_api_key=groq_api_key,
                     temperature=settings.temperature,
+                    # Ask Groq to return a strict JSON object so our Pydantic parser succeeds
+                    response_format={"type": "json_object"},
                 )
                 print(f"✅ Using Groq for LLM: {groq_model}")
             except ImportError:
