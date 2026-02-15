@@ -28,6 +28,13 @@ jobs:
       - name: Run training pipeline
         working-directory: agents_ai
         run: |
+          # Set PYTHONPATH to ensure Python can find forecast_system package
+          # This handles nested directory structures in GitHub Actions
+          export PYTHONPATH=$PYTHONPATH:$(pwd)
+          echo "Current directory: $(pwd)"
+          echo "PYTHONPATH: $PYTHONPATH"
+          echo "Python path check:"
+          python -c "import sys; print('\\n'.join(sys.path))"
           python train_forecast_system.py
 
       - name: Commit updated model
