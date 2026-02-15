@@ -94,7 +94,7 @@ async def load_model():
 
 class ForecastRequest(BaseModel):
     """Request model for forecast endpoint."""
-    hospital_ids: Optional[List[int]] = None  # If None, forecast for all hospitals
+    hospital_ids: Optional[List[str]] = None  # If None, forecast for all hospitals (e.g., ['HOSP_1', 'HOSP_2'])
     horizons: Optional[List[int]] = [1, 2, 3, 4, 5, 6, 7]  # Days ahead to forecast
     use_quantiles: bool = True
     future_exogenous: Optional[Dict] = None  # Optional future scenario data
