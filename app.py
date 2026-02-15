@@ -7,7 +7,6 @@ Production FastAPI application for hospital admissions forecasting.
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List, Dict
-import joblib
 import pandas as pd
 import numpy as np
 import os
@@ -16,6 +15,7 @@ from pathlib import Path
 from forecast_system.inference import forecast, forecast_to_json
 from forecast_system.ingestion import load_data
 from forecast_system.feature_engineering import engineer_features
+from forecast_system.models.per_horizon_model import PerHorizonForecaster
 
 app = FastAPI(
     title="Hospital Forecast API",
@@ -49,7 +49,7 @@ async def load_model():
         for path in model_paths:
             path_str = str(path)
             if os.path.exists(path_str):
-                model = joblib.load(path_str)
+                model = PerHorizonForecaster.load(path_str)
                 print(f"✅ Model loaded from: {path_str}")
                 model_loaded = True
                 break
