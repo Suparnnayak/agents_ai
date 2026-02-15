@@ -41,22 +41,32 @@ async def load_model():
     
     try:
         # Try multiple paths for model (relative to project root or agents_ai)
+        # Also check Render's deployment structure
         model_paths = [
             MODEL_PATH,  # Relative to current working directory
             f"../{MODEL_PATH}",  # One level up from agents_ai
             Path(__file__).parent.parent / MODEL_PATH,  # From agents_ai to project root
             Path(__file__).parent / MODEL_PATH,  # Inside agents_ai
+            # Render-specific paths
+            Path("/opt/render/project") / MODEL_PATH,  # Render absolute path
+            Path("/opt/render/project/src") / MODEL_PATH,  # Render with src directory
+            Path("/opt/render/project/src") / ".." / MODEL_PATH,  # Render src parent
         ]
         
         model_loaded = False
         for path in model_paths:
-            if os.path.exists(path):
-                model = joblib.load(path)
-                print(f"✅ Model loaded from: {path}")
+            path_str = str(path)
+            if os.path.exists(path_str):
+                model = joblib.load(path_str)
+                print(f"✅ Model loaded from: {path_str}")
                 model_loaded = True
                 break
         
         if not model_loaded:
+            # Debug: print current working directory and file location
+            print(f"Current working directory: {os.getcwd()}")
+            print(f"App file location: {Path(__file__).absolute()}")
+            print(f"App file parent: {Path(__file__).parent.absolute()}")
             raise FileNotFoundError(f"Model not found. Tried: {model_paths}")
         
         # Load historical data for feature engineering
@@ -65,14 +75,19 @@ async def load_model():
             "../dataset/synthetic_hospital_data.csv",  # One level up from agents_ai
             "agents_ai/dataset/synthetic_hospital_data.csv",  # From project root
             Path(__file__).parent / "dataset/synthetic_hospital_data.csv",  # Inside agents_ai
-            Path(__file__).parent.parent / "dataset/synthetic_hospital_data.csv"  # From agents_ai to project root
+            Path(__file__).parent.parent / "dataset/synthetic_hospital_data.csv",  # From agents_ai to project root
+            # Render-specific paths
+            Path("/opt/render/project") / "agents_ai" / "dataset" / "synthetic_hospital_data.csv",
+            Path("/opt/render/project") / "dataset" / "synthetic_hospital_data.csv",
+            Path("/opt/render/project/src") / "dataset" / "synthetic_hospital_data.csv",
         ]
         
         data_loaded = False
         for path in data_paths:
-            if os.path.exists(path):
-                historical_data = load_data(path)
-                print(f"✅ Historical data loaded from: {path}")
+            path_str = str(path)
+            if os.path.exists(path_str):
+                historical_data = load_data(path_str)
+                print(f"✅ Historical data loaded from: {path_str}")
                 data_loaded = True
                 break
         
