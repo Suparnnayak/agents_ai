@@ -4,32 +4,6 @@ Quick Start Training Script
 Simple entry point for training the forecasting system.
 """
 
-import sys
-import os
-from pathlib import Path
-
-# Robust root path injection - works in both local and CI environments
-ROOT = Path(__file__).resolve().parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-# Debug output (can be removed after fixing)
-if os.getenv("GITHUB_ACTIONS"):
-    print("=" * 70)
-    print("DEBUG: Import Path Resolution")
-    print("=" * 70)
-    print(f"Script location: {__file__}")
-    print(f"ROOT directory: {ROOT}")
-    print(f"ROOT exists: {ROOT.exists()}")
-    print(f"forecast_system exists: {(ROOT / 'forecast_system').exists()}")
-    print(f"forecast_system/__init__.py exists: {(ROOT / 'forecast_system' / '__init__.py').exists()}")
-    print(f"forecast_system/train_pipeline.py exists: {(ROOT / 'forecast_system' / 'train_pipeline.py').exists()}")
-    print(f"Current working directory: {os.getcwd()}")
-    print(f"sys.path (first 5):")
-    for i, p in enumerate(sys.path[:5]):
-        print(f"  [{i}] {p}")
-    print("=" * 70)
-
 from forecast_system.train_pipeline import run_training_pipeline
 from forecast_system.config import DEFAULT_TRAINING_CONFIG
 

@@ -5,9 +5,15 @@ on:
     - cron: "0 0 1 * *"   # Runs 1st of every month at 00:00 UTC
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   retrain:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
 
     steps:
       - name: Checkout repo
@@ -19,28 +25,21 @@ jobs:
           python-version: "3.10"
 
       - name: Install dependencies
-        working-directory: agents_ai
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Debug directory
-        working-directory: agents_ai
-        run: |
-          pwd
-          ls -R
+          pip install -e .
 
       - name: Run training pipeline
-        working-directory: agents_ai
         run: |
-          export PYTHONPATH=$(pwd)
+          export PYTHONPATH="${{ github.workspace }}:${PYTHONPATH}"
           python train_forecast_system.py
 
       - name: Commit updated model
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add agents_ai/models/forecast_system/lightgbm_final.pkl
+          git add models/forecast_system/lightgbm_final.pkl
           if ! git diff --staged --quiet; then
             git commit -m "Auto retrain model [skip ci]"
             git push
