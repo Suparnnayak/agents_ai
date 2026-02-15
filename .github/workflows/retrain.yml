@@ -30,9 +30,16 @@ jobs:
           pip install -r requirements.txt
           pip install -e .
 
+      - name: Debug directory structure
+        run: |
+          echo "Current working directory:"
+          pwd
+          echo "Directory tree:"
+          ls -R
+
       - name: Run training pipeline
         run: |
-          export PYTHONPATH="${{ github.workspace }}:${PYTHONPATH}"
+          export PYTHONPATH="$PWD"
           python train_forecast_system.py
 
       - name: Commit updated model
