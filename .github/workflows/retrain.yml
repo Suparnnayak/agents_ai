@@ -24,12 +24,33 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Debug file structure
+        working-directory: agents_ai
+        run: |
+          echo "=== Current directory ==="
+          pwd
+          echo ""
+          echo "=== Root contents ==="
+          ls -la
+          echo ""
+          echo "=== Looking for train_forecast_system.py ==="
+          find . -name "train_forecast_system.py" -type f
+          echo ""
+          echo "=== Looking for forecast_system directory ==="
+          find . -type d -name "forecast_system" | head -10
+          echo ""
+          echo "=== forecast_system contents (if exists) ==="
+          ls -la forecast_system/ 2>&1 || echo "forecast_system NOT FOUND in current directory"
+          echo ""
+          echo "=== Python sys.path ==="
+          python -c "import sys; [print(p) for p in sys.path]"
+          echo ""
+          echo "=== Testing import ==="
+          python -c "import sys; from pathlib import Path; ROOT = Path('.').resolve(); print(f'ROOT: {ROOT}'); sys.path.insert(0, str(ROOT)); import forecast_system" 2>&1 || echo "Import failed"
+
       - name: Run training pipeline
         working-directory: agents_ai
         run: |
-          echo "Running from:"
-          pwd
-          ls
           export PYTHONPATH=$(pwd)
           python train_forecast_system.py
 
