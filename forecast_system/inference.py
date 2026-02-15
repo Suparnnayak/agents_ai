@@ -11,7 +11,16 @@ from pathlib import Path
 
 from forecast_system.utils import get_logger
 
-from forecast_system.feature_engineering import engineer_features
+from forecast_system.feature_engineering import (
+    engineer_features,
+    create_lag_features,
+    create_rolling_features,
+    create_temporal_features,
+    create_exogenous_lags,
+    create_interaction_features,
+    create_structural_shock_features,
+    encode_categoricals
+)
 from forecast_system.models import LightGBMForecaster, XGBoostForecaster
 from forecast_system.post_processing import post_process_predictions, format_forecast_output
 from forecast_system.conformal_calibration import enforce_quantile_monotonicity
@@ -109,11 +118,27 @@ def forecast(model,
             raise ValueError("Expected per-horizon model dict with models that have predict/predict_quantiles methods")
         logger.info(f"   Detected per-horizon model dict with horizons: {sorted(model.keys())}")
     
-    # Get last date
-    last_date = historical_df['date'].max()
+    # CRITICAL: Engineer features on historical data before inference
+    # The model expects all features (lags, rolling stats, encodings, etc.)
+    logger.info("🔧 Engineering features on historical data...")
+    historical_df_engineered = historical_df.copy()
     
-    # Prepare inference data
-    inference_df = prepare_inference_data(historical_df, last_date, horizons)
+    # Apply all feature engineering steps (same as training)
+    historical_df_engineered = create_lag_features(historical_df_engineered)
+    historical_df_engineered = create_rolling_features(historical_df_engineered)
+    historical_df_engineered = create_temporal_features(historical_df_engineered)
+    historical_df_engineered = create_exogenous_lags(historical_df_engineered)
+    historical_df_engineered = create_interaction_features(historical_df_engineered)
+    historical_df_engineered = create_structural_shock_features(historical_df_engineered)
+    historical_df_engineered = encode_categoricals(historical_df_engineered)
+    
+    logger.info(f"   Engineered features: {historical_df_engineered.shape[1]} columns")
+    
+    # Get last date
+    last_date = historical_df_engineered['date'].max()
+    
+    # Prepare inference data (now with all features)
+    inference_df = prepare_inference_data(historical_df_engineered, last_date, horizons)
     
     # Select feature columns (same as training)
     feature_cols = [
