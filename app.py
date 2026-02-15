@@ -14,8 +14,9 @@ import os
 from pathlib import Path
 import sys
 
-# Add forecast_system to path
-sys.path.insert(0, str(Path(__file__).parent))
+# Fix path resolution - makes it CI-safe and Render-safe
+ROOT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT_DIR))
 
 from forecast_system.inference import forecast, forecast_to_json
 from forecast_system.ingestion import load_data

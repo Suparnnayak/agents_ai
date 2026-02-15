@@ -19,10 +19,14 @@ jobs:
           python-version: "3.10"
 
       - name: Install dependencies
+        working-directory: agents_ai
         run: |
+          pip install --upgrade pip
           pip install -r requirements.txt
+          pip install -e .  # Install package in editable mode
 
       - name: Run training pipeline
+        working-directory: agents_ai
         run: |
           python train_forecast_system.py
 
@@ -30,6 +34,10 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add models/
-          git commit -m "Auto retrain model"
-          git push
+          git add agents_ai/models/forecast_system/lightgbm_final.pkl
+          if ! git diff --staged --quiet; then
+            git commit -m "Auto retrain model [skip ci]"
+            git push
+          else
+            echo "No model changes to commit"
+          fi
