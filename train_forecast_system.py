@@ -7,9 +7,10 @@ Simple entry point for training the forecasting system.
 import sys
 from pathlib import Path
 
-# Fix path resolution - makes it CI-safe and Render-safe
-ROOT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT_DIR))
+# Robust root path injection - works in both local and CI environments
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from forecast_system.train_pipeline import run_training_pipeline
 from forecast_system.config import DEFAULT_TRAINING_CONFIG

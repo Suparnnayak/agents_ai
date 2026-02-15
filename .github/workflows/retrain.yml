@@ -23,18 +23,14 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install -e .  # Install package in editable mode
 
       - name: Run training pipeline
         working-directory: agents_ai
         run: |
-          # Set PYTHONPATH to ensure Python can find forecast_system package
-          # This handles nested directory structures in GitHub Actions
-          export PYTHONPATH=$PYTHONPATH:$(pwd)
-          echo "Current directory: $(pwd)"
-          echo "PYTHONPATH: $PYTHONPATH"
-          echo "Python path check:"
-          python -c "import sys; print('\\n'.join(sys.path))"
+          echo "Running from:"
+          pwd
+          ls
+          export PYTHONPATH=$(pwd)
           python train_forecast_system.py
 
       - name: Commit updated model
