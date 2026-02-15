@@ -175,6 +175,9 @@ def predict(request: ForecastRequest):
         }
         
     except Exception as e:
+        import traceback
+        print("❌ PREDICT ERROR:", str(e))
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
 
 
