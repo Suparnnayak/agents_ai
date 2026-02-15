@@ -2,8 +2,9 @@ services:
   - type: web
     name: hospital-forecast-api
     env: python
-    buildCommand: cd agents_ai && pip install -r requirements.txt
-    startCommand: cd agents_ai && uvicorn app:app --host 0.0.0.0 --port $PORT
+    rootDir: agents_ai
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.12

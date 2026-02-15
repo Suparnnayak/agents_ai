@@ -40,17 +40,13 @@ async def load_model():
     global model, historical_data
     
     try:
-        # Try multiple paths for model (relative to project root or agents_ai)
-        # Also check Render's deployment structure
+        # Try multiple paths for model
+        # Model is now in agents_ai/models/ so it gets deployed with the app
         model_paths = [
-            MODEL_PATH,  # Relative to current working directory
-            f"../{MODEL_PATH}",  # One level up from agents_ai
-            Path(__file__).parent.parent / MODEL_PATH,  # From agents_ai to project root
-            Path(__file__).parent / MODEL_PATH,  # Inside agents_ai
-            # Render-specific paths
-            Path("/opt/render/project") / MODEL_PATH,  # Render absolute path
-            Path("/opt/render/project/src") / MODEL_PATH,  # Render with src directory
-            Path("/opt/render/project/src") / ".." / MODEL_PATH,  # Render src parent
+            MODEL_PATH,  # Relative to current working directory (agents_ai/)
+            Path(__file__).parent / MODEL_PATH,  # Relative to app.py location
+            f"../{MODEL_PATH}",  # One level up (fallback)
+            Path(__file__).parent.parent / MODEL_PATH,  # From agents_ai to project root (fallback)
         ]
         
         model_loaded = False
