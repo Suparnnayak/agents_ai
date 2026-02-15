@@ -140,22 +140,127 @@ def forecast(model,
     # Prepare inference data (now with all features)
     inference_df = prepare_inference_data(historical_df_engineered, last_date, horizons)
     
-    # Select feature columns (same as training)
+    # Add horizon-specific features (created during training horizon stacking)
+    if 'horizon' in inference_df.columns:
+        inference_df['horizon_squared'] = inference_df['horizon'] ** 2
+        # horizon_vol_interaction = horizon * volatility_index (if available)
+        if 'volatility_index' in inference_df.columns:
+            inference_df['horizon_vol_interaction'] = inference_df['horizon'] * inference_df['volatility_index']
+        else:
+            inference_df['horizon_vol_interaction'] = 0
+        logger.info("   Added horizon-specific features: horizon_squared, horizon_vol_interaction")
+    
+    # Add regime indicators if missing (created during training)
+    if 'regime_indicator' not in inference_df.columns:
+        # Create regime indicator based on outbreak_index threshold
+        if 'outbreak_index' in inference_df.columns:
+            inference_df['regime_indicator'] = (inference_df['outbreak_index'] > 70.0).astype(int)
+            logger.info("   Added regime_indicator based on outbreak_index > 70")
+        else:
+            inference_df['regime_indicator'] = 0
+    
+    if 'high_vol_regime' not in inference_df.columns:
+        # Create high volatility regime based on rolling_std_7
+        if 'rolling_std_7' in inference_df.columns and 'lag_1' in inference_df.columns:
+            # High vol if std > 20% of mean
+            mean_proxy = inference_df['lag_1'].fillna(0)
+            std_threshold = mean_proxy * 0.2
+            inference_df['high_vol_regime'] = (inference_df['rolling_std_7'] > std_threshold).astype(int)
+            inference_df['high_vol_regime'] = inference_df['high_vol_regime'].fillna(0)
+            logger.info("   Added high_vol_regime based on rolling_std_7")
+        else:
+            inference_df['high_vol_regime'] = 0
+    
+    # Add missing rolling_mean_30 if needed (some features depend on it)
+    if 'rolling_mean_30' not in inference_df.columns:
+        if 'admissions' in historical_df_engineered.columns:
+            # Compute rolling mean from historical data
+            rolling_mean_30 = historical_df_engineered.groupby('hospital_id')['admissions'].transform(
+                lambda x: x.rolling(window=30, min_periods=1).mean()
+            )
+            # Get last value for each hospital
+            last_rolling_mean = historical_df_engineered.groupby('hospital_id')['admissions'].transform(
+                lambda x: x.rolling(window=30, min_periods=1).mean().iloc[-1] if len(x) > 0 else 0
+            )
+            # Map to inference_df
+            hospital_to_mean = historical_df_engineered.groupby('hospital_id')['admissions'].apply(
+                lambda x: x.rolling(window=30, min_periods=1).mean().iloc[-1] if len(x) > 0 else 0
+            ).to_dict()
+            inference_df['rolling_mean_30'] = inference_df['hospital_id'].map(hospital_to_mean).fillna(0)
+            logger.info("   Added rolling_mean_30 from historical data")
+        else:
+            inference_df['rolling_mean_30'] = 0
+    
+    # Select feature columns (EXACT SAME as training - from feature_engineering.py)
     feature_cols = [
-        'lag_1', 'lag_7', 'lag_14', 'lag_21',
-        'rolling_std_7', 'rolling_std_14',
+        # Lags (expanded to reduce autocorrelation and CV variance)
+        'lag_1', 'lag_2', 'lag_3', 'lag_5', 'lag_7', 'lag_14', 'lag_21', 'lag_30', 'lag_60', 'lag_90',
+        # First difference
+        'admissions_diff_1',
+        # Recursive features (reduce residual autocorrelation)
+        'change_from_week_ago', 'acceleration',
+        # Rolling (std and mean for stability)
+        'rolling_std_7', 'rolling_std_14', 'rolling_std_30',
+        'rolling_mean_30',
+        # EMA and slope
+        'ema_7', 'rolling_slope_7',
+        # Month one-hot (regime-aware, reduces CV variance)
+        'month_1', 'month_2', 'month_3', 'month_4', 'month_5', 'month_6',
+        'month_7', 'month_8', 'month_9', 'month_10', 'month_11', 'month_12',
+        # Regime indicators
+        'regime_indicator', 'high_vol_regime',
+        # Horizon-specific features (helps model learn uncertainty grows nonlinearly)
+        'horizon_squared', 'horizon_vol_interaction',
+        # Encoded
         'hospital_id_enc', 'season_enc',
-        'month', 'week_of_year', 'quarter', 'day_of_year', 'is_weekend',
+        # Temporal
+        'month', 'week_of_year', 'quarter', 'day_of_year', 'is_weekend', 'day_of_week',
         'month_sin', 'month_cos', 'day_of_year_sin', 'day_of_year_cos',
+        'day_of_week_sin', 'day_of_week_cos',
+        # Fourier terms
+        'yearly_sin_1', 'yearly_cos_1', 'yearly_sin_2', 'yearly_cos_2', 'yearly_sin_3', 'yearly_cos_3',
+        'weekly_sin_1', 'weekly_cos_1', 'weekly_sin_2', 'weekly_cos_2',
+        # Weather (if available)
         'temperature', 'humidity', 'rainfall', 'wind_speed', 'aqi',
+        # Exogenous lags (if created)
+        'aqi_lag_1', 'aqi_lag_7', 'outbreak_index_lag_1', 'outbreak_index_lag_7',
+        'temperature_lag_1', 'temperature_lag_7',
+        # Other
         'outbreak_index', 'mobility_index',
         'population', 'population_density', 'elderly_ratio',
         'hospital_capacity', 'icu_capacity',
+        # Interactions (if created)
+        'outbreak_winter', 'temp_elderly', 'mobility_weekend', 'aqi_temp', 'aqi_winter',
+        # Nonlinear exogenous interactions (tree models need interaction triggers)
+        'outbreak_vol_regime', 'outbreak_capacity', 'aqi_elderly',
+        # Exogenous trend momentum (rate-of-change features)
+        'outbreak_change_7', 'aqi_change_7',
+        # Structural shock features (surge detection)
+        'outbreak_acceleration', 'aqi_acceleration', 'admissions_acceleration_7', 'volatility_index',
+        # Normalized features
+        'aqi_normalized', 'temperature_normalized', 'outbreak_index_normalized',
+        # Horizon (CRITICAL - must be last to match training order)
         'horizon'
     ]
     
+    # Select only features that exist in inference_df (some may be missing if data doesn't have them)
     available_features = [col for col in feature_cols if col in inference_df.columns]
-    X_inference = inference_df[available_features].copy().fillna(0)
+    logger.info(f"   Selected {len(available_features)} features from {len(feature_cols)} expected features")
+    
+    # Warn if we're missing many features
+    missing_features = set(feature_cols) - set(available_features)
+    if missing_features:
+        logger.warning(f"   Missing {len(missing_features)} features: {sorted(list(missing_features))[:15])}")
+        # Try to add missing features as zeros (model might expect them)
+        for feat in missing_features:
+            if feat not in inference_df.columns:
+                inference_df[feat] = 0
+                available_features.append(feat)
+        logger.info(f"   Added {len(missing_features)} missing features as zeros. Total features: {len(available_features)}")
+    
+    # Ensure we have all features in the correct order
+    X_inference = inference_df[feature_cols].copy().fillna(0)  # Use feature_cols order, fill missing with 0
+    logger.info(f"   Final feature matrix shape: {X_inference.shape} (expected ~95 features)")
     
     # Filter by hospital_ids if provided
     if hospital_ids is not None:
