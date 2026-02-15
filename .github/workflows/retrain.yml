@@ -1,0 +1,50 @@
+name: Retrain Model
+
+on:
+  schedule:
+    - cron: "0 0 1 * *"   # Runs 1st of every month at 00:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Verify structure
+        run: |
+          pwd
+          ls -R
+
+      - name: Test import
+        run: python -c "from forecast_system.train_pipeline import run_training_pipeline; print('Import OK')"
+
+      - name: Run training
+        run: python train_forecast_system.py
+
+      - name: Commit updated model
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add models/forecast_system/lightgbm_final.pkl
+          if ! git diff --staged --quiet; then
+            git commit -m "Auto retrain model [skip ci]"
+            git push
+          else
+            echo "No model changes to commit"
+          fi

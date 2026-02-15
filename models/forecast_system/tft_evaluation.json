@@ -1,0 +1,17 @@
+{
+  "tree_system_adequate": false,
+  "recommendation": "consider_tft",
+  "reasons": [
+    "High residual autocorrelation (lag-1: 0.541 > 0.4)",
+    "Weekly structure not captured (lag-7 ACF: 0.651 > 0.50)",
+    "High CV instability (CoV: 54.9% > 40.0%)"
+  ],
+  "metrics": {
+    "residual_acf_lag1": 0.5412869335765114,
+    "residual_acf_lag7": 0.6510988231674082,
+    "cv_coefficient_of_variation": 54.87076529865664,
+    "long_horizon_conformal_adjustment": null,
+    "horizon_7_interval_width": null
+  },
+  "score": 0.6525403201138286
+}
