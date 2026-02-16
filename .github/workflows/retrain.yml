@@ -32,7 +32,7 @@ jobs:
           ls -R
 
       - name: Test import
-        run: python -c "from forecast_system.train_pipeline import run_training_pipeline; print('Import OK')"
+        run: python -c "from forecast_system.training import run_training_pipeline; print('Import OK')"
 
       - name: Run training
         run: python train_forecast_system.py

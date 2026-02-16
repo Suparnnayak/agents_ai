@@ -9,7 +9,9 @@ import requests
 import json
 from datetime import datetime
 
-BASE_URL = "https://hospital-forecasting.onrender.com"
+# Change this to test locally or deployed API
+BASE_URL = "http://localhost:8000"  # Local
+# BASE_URL = "https://hospital-forecasting.onrender.com"  # Deployed
 
 
 def test_root():

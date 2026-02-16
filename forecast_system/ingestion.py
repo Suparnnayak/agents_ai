@@ -64,7 +64,7 @@ def load_data(csv_path: str) -> pd.DataFrame:
     
     csv_path = str(csv_path_obj.resolve())
     
-    logger.info(f"📥 Loading dataset from {csv_path}")
+    logger.info(f"Loading dataset from {csv_path}")
     
     # Load with date parsing
     df = pd.read_csv(csv_path, parse_dates=["date"])
@@ -85,10 +85,10 @@ def load_data(csv_path: str) -> pd.DataFrame:
     # Remove duplicates
     duplicates = df.duplicated(subset=['hospital_id', 'date'], keep=False)
     if duplicates.any():
-        logger.warning(f"⚠️  Found {duplicates.sum()} duplicates, keeping first")
+        logger.warning(f"Found {duplicates.sum()} duplicates, keeping first")
         df = df.drop_duplicates(subset=['hospital_id', 'date'], keep='first').reset_index(drop=True)
     
-    logger.info(f"✅ Loaded {df.shape[0]} rows")
+    logger.info(f"Loaded {df.shape[0]} rows")
     logger.info(f"   Date range: {df['date'].min()} to {df['date'].max()}")
     logger.info(f"   Hospitals: {df['hospital_id'].nunique()}")
     logger.info(f"   Columns: {df.shape[1]}")

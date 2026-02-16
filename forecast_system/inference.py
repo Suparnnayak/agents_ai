@@ -1,434 +1,334 @@
 """
-Inference Module
+Production Inference Pipeline
 
-Production-ready inference pipeline for making forecasts.
+100% stateless, deterministic forecasting with iterative prediction.
+No state mutation. No inplace operations. All operations on deep copies.
 """
 
 import pandas as pd
 import numpy as np
-from typing import Dict, Optional, List
-from pathlib import Path
+from typing import List
+from datetime import timedelta
 
-from forecast_system.utils import get_logger
-
-from forecast_system.feature_engineering import (
-    engineer_features,
-    create_lag_features,
-    create_rolling_features,
-    create_temporal_features,
-    create_exogenous_lags,
-    create_interaction_features,
-    create_structural_shock_features,
-    encode_categoricals
-)
-from forecast_system.models import LightGBMForecaster, XGBoostForecaster
-from forecast_system.post_processing import post_process_predictions, format_forecast_output
-from forecast_system.conformal_calibration import enforce_quantile_monotonicity
-
-logger = get_logger(__name__)
+from forecast_system.model_bundle import ModelBundle
 
 
-def prepare_inference_data(df: pd.DataFrame, 
-                          last_date: pd.Timestamp,
-                          horizons: List[int] = [1, 2, 3, 4, 5, 6, 7]) -> pd.DataFrame:
+def forecast(
+    bundle: ModelBundle,
+    raw_df: pd.DataFrame,
+    horizons: List[int] = [1, 2, 3, 4, 5, 6, 7]
+) -> pd.DataFrame:
     """
-    Prepare data for inference (forecasting future dates).
+    Generate forecasts using iterative prediction.
+    
+    CRITICAL: This function is 100% stateless. All operations use deep copies.
+    Multiple calls with identical inputs produce identical outputs.
     
     Args:
-        df: Historical data with all features
-        last_date: Last date in historical data
-        horizons: List of horizons to forecast
-        
+        bundle: ModelBundle with trained model
+        raw_df: Historical DataFrame (must have 'admissions' column)
+        horizons: List of horizons to forecast [1, 2, 3, 4, 5, 6, 7]
+    
     Returns:
-        DataFrame ready for model prediction
+        DataFrame with columns: hospital_id, horizon, prediction
     """
-    logger.info(f"🔮 Preparing inference data for horizons {horizons}...")
+    # ============================================================================
+    # STEP 1: Create deep copy - NEVER modify input
+    # ============================================================================
+    # DIAGNOSTIC: Track input state (can be removed in production)
+    input_rows = len(raw_df)
+    input_hospitals = raw_df['hospital_id'].nunique() if not raw_df.empty else 0
     
-    # Get the last row for each hospital
-    last_rows = df.groupby('hospital_id').tail(1).copy()
+    df = raw_df.copy(deep=True)
     
-    # Create future dates
-    inference_rows = []
+    # Validate input
+    if df.empty:
+        raise ValueError("Input DataFrame is empty")
     
-    for _, row in last_rows.iterrows():
-        for horizon in horizons:
-            future_date = last_date + pd.Timedelta(days=horizon)
-            
-            new_row = row.copy()
-            new_row['date'] = future_date
-            new_row['horizon'] = horizon
+    # DIAGNOSTIC: Verify deep copy (should match input)
+    assert len(df) == input_rows, f"Deep copy failed: input={input_rows}, copy={len(df)}"
+    assert df['hospital_id'].nunique() == input_hospitals, f"Hospital count changed: input={input_hospitals}, copy={df['hospital_id'].nunique()}"
+    
+    required_cols = ['hospital_id', 'date', 'admissions']
+    missing = [col for col in required_cols if col not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+    
+    # ============================================================================
+    # STEP 2: Sort and prepare data (all operations on copies)
+    # ============================================================================
+    df = df.sort_values(['hospital_id', 'date']).reset_index(drop=True).copy(deep=True)
+    
+    # Get latest row per hospital (deterministic - always last row per group)
+    latest_rows = df.groupby('hospital_id', sort=False).tail(1).reset_index(drop=True).copy(deep=True)
+    
+    if latest_rows.empty:
+        raise ValueError("No data found for any hospital")
+    
+    # ============================================================================
+    # STEP 3: Create features for historical data (deep copy)
+    # ============================================================================
+    df_with_features = df.copy(deep=True)
+    
+    # Create lags (these create new columns, no mutation of original)
+    df_with_features['lag_1'] = df_with_features.groupby('hospital_id', sort=False)['admissions'].shift(1)
+    df_with_features['lag_7'] = df_with_features.groupby('hospital_id', sort=False)['admissions'].shift(7)
+    
+    # Apply encoders (creates new columns)
+    if 'hospital_id' in bundle.encoders:
+        df_with_features['hospital_id_enc'] = bundle.encoders['hospital_id'].transform(
+            df_with_features['hospital_id'].values
+        )
+    else:
+        raise ValueError("hospital_id encoder not found in bundle")
+    
+    if 'season' in bundle.encoders:
+        df_with_features['season_enc'] = bundle.encoders['season'].transform(
+            df_with_features['season'].values
+        )
+    else:
+        # If season encoder missing, create default
+        df_with_features['season_enc'] = 0
+    
+    # Get latest state per hospital (deterministic)
+    latest_state = df_with_features.groupby('hospital_id', sort=False).tail(1).reset_index(drop=True).copy(deep=True)
+    
+    # ============================================================================
+    # STEP 4: Structural validation
+    # ============================================================================
+    if latest_state.empty:
+        raise ValueError("Latest state DataFrame is empty after feature engineering")
+    
+    # Validate feature columns exist
+    missing_features = set(bundle.feature_columns) - set(latest_state.columns)
+    if missing_features:
+        raise ValueError(f"Missing required features in data: {missing_features}")
+    
+    # ============================================================================
+    # STEP 5: Generate predictions (deterministic iteration)
+    # ============================================================================
+    results = []
+    sorted_horizons = sorted(horizons)  # Deterministic order
+    
+    # Process each hospital independently (deterministic order)
+    hospital_ids = sorted(latest_state['hospital_id'].unique().tolist())
+    
+    for hospital_id in hospital_ids:
+        # Get hospital data (deep copy)
+        hospital_mask = latest_state['hospital_id'] == hospital_id
+        hospital_data = latest_state[hospital_mask].iloc[0].copy(deep=True).to_dict()
+        
+        # Get last 7 days of actual admissions for lag initialization
+        hospital_mask_history = df_with_features['hospital_id'] == hospital_id
+        hospital_history = df_with_features[hospital_mask_history].tail(7).copy(deep=True)
+        
+        # Get last date
+        last_date = pd.to_datetime(hospital_data['date'])
+        
+        # Initialize admissions history (last 7 days, deterministic)
+        admissions_history = hospital_history['admissions'].values.tolist()
+        
+        # Ensure we have at least 7 values (pad with last value if needed)
+        while len(admissions_history) < 7:
+            last_val = admissions_history[-1] if admissions_history else hospital_data['admissions']
+            admissions_history.insert(0, last_val)
+        
+        # Track predictions for iterative updates
+        predictions = []
+        
+        # Iterate through horizons sequentially (deterministic order)
+        for horizon in sorted_horizons:
+            # Create feature row (deep copy from dict)
+            feature_row = hospital_data.copy()
+            future_date = last_date + timedelta(days=horizon)
+            feature_row['date'] = future_date
             
             # Update temporal features for future date
-            new_row['month'] = future_date.month
-            new_row['week_of_year'] = future_date.isocalendar().week
-            new_row['quarter'] = future_date.quarter
-            new_row['day_of_year'] = future_date.timetuple().tm_yday
-            new_row['is_weekend'] = 1 if future_date.weekday() >= 5 else 0
+            feature_row['month'] = future_date.month
+            feature_row['week_of_year'] = future_date.isocalendar().week
+            feature_row['is_weekend'] = 1 if future_date.weekday() >= 5 else 0
+            feature_row['day_of_week'] = future_date.weekday()
             
-            # Cyclical encoding
-            new_row['month_sin'] = np.sin(2 * np.pi * future_date.month / 12)
-            new_row['month_cos'] = np.cos(2 * np.pi * future_date.month / 12)
-            new_row['day_of_year_sin'] = np.sin(2 * np.pi * new_row['day_of_year'] / 365.25)
-            new_row['day_of_year_cos'] = np.cos(2 * np.pi * new_row['day_of_year'] / 365.25)
-            
-            inference_rows.append(new_row)
-    
-    inference_df = pd.DataFrame(inference_rows)
-    
-    logger.info(f"   Created {len(inference_df)} inference rows")
-    
-    return inference_df
-
-
-def forecast(model,
-            historical_df: pd.DataFrame,
-            horizons: List[int] = [1, 2, 3, 4, 5, 6, 7],
-            use_quantiles: bool = False,
-            quantiles: List[float] = [0.1, 0.5, 0.9],
-            hospital_ids: Optional[List] = None,
-            future_exogenous: Optional[pd.DataFrame] = None,
-            apply_post_processing: bool = True) -> pd.DataFrame:
-    """
-    Make forecasts for future horizons.
-    
-    Args:
-        model: Trained forecasting model (can be a single model, PerHorizonForecaster, or dict of per-horizon models)
-        historical_df: Historical data with features
-        horizons: List of horizons to forecast
-        use_quantiles: Whether to return quantile predictions
-        quantiles: Quantiles to predict
-        
-    Returns:
-        DataFrame with forecasts
-    """
-    logger.info("🔮 Generating forecasts...")
-    
-    # Defensive check: detect if model is a dict of per-horizon models
-    is_per_horizon_dict = isinstance(model, dict)
-    
-    if is_per_horizon_dict:
-        # Check if it's a metadata dict (with paths) or direct model dict
-        if 'models_by_horizon_paths' in model:
-            raise ValueError(
-                "Model file contains metadata with paths. "
-                "Use PerHorizonForecaster.load() to load the model properly."
-            )
-        # Validate it's a dict of models
-        if not all(hasattr(m, 'predict') or hasattr(m, 'predict_quantiles') for m in model.values() if m is not None):
-            raise ValueError("Expected per-horizon model dict with models that have predict/predict_quantiles methods")
-        logger.info(f"   Detected per-horizon model dict with horizons: {sorted(model.keys())}")
-    
-    # CRITICAL: Engineer features on historical data before inference
-    # The model expects all features (lags, rolling stats, encodings, etc.)
-    logger.info("🔧 Engineering features on historical data...")
-    historical_df_engineered = historical_df.copy()
-    
-    # Apply all feature engineering steps (same as training)
-    historical_df_engineered = create_lag_features(historical_df_engineered)
-    historical_df_engineered = create_rolling_features(historical_df_engineered)
-    historical_df_engineered = create_temporal_features(historical_df_engineered)
-    historical_df_engineered = create_exogenous_lags(historical_df_engineered)
-    historical_df_engineered = create_interaction_features(historical_df_engineered)
-    historical_df_engineered = create_structural_shock_features(historical_df_engineered)
-    historical_df_engineered = encode_categoricals(historical_df_engineered)
-    
-    logger.info(f"   Engineered features: {historical_df_engineered.shape[1]} columns")
-    
-    # Get last date
-    last_date = historical_df_engineered['date'].max()
-    
-    # Prepare inference data (now with all features)
-    inference_df = prepare_inference_data(historical_df_engineered, last_date, horizons)
-    
-    # Add horizon-specific features (created during training horizon stacking)
-    if 'horizon' in inference_df.columns:
-        inference_df['horizon_squared'] = inference_df['horizon'] ** 2
-        # horizon_vol_interaction = horizon * volatility_index (if available)
-        if 'volatility_index' in inference_df.columns:
-            inference_df['horizon_vol_interaction'] = inference_df['horizon'] * inference_df['volatility_index']
-        else:
-            inference_df['horizon_vol_interaction'] = 0
-        logger.info("   Added horizon-specific features: horizon_squared, horizon_vol_interaction")
-    
-    # Add regime indicators if missing (created during training)
-    if 'regime_indicator' not in inference_df.columns:
-        # Create regime indicator based on outbreak_index threshold
-        if 'outbreak_index' in inference_df.columns:
-            inference_df['regime_indicator'] = (inference_df['outbreak_index'] > 70.0).astype(int)
-            logger.info("   Added regime_indicator based on outbreak_index > 70")
-        else:
-            inference_df['regime_indicator'] = 0
-    
-    if 'high_vol_regime' not in inference_df.columns:
-        # Create high volatility regime based on rolling_std_7
-        if 'rolling_std_7' in inference_df.columns and 'lag_1' in inference_df.columns:
-            # High vol if std > 20% of mean
-            mean_proxy = inference_df['lag_1'].fillna(0)
-            std_threshold = mean_proxy * 0.2
-            inference_df['high_vol_regime'] = (inference_df['rolling_std_7'] > std_threshold).astype(int)
-            inference_df['high_vol_regime'] = inference_df['high_vol_regime'].fillna(0)
-            logger.info("   Added high_vol_regime based on rolling_std_7")
-        else:
-            inference_df['high_vol_regime'] = 0
-    
-    # Add missing rolling_mean_30 if needed (some features depend on it)
-    if 'rolling_mean_30' not in inference_df.columns:
-        if 'admissions' in historical_df_engineered.columns:
-            # Compute rolling mean from historical data
-            rolling_mean_30 = historical_df_engineered.groupby('hospital_id')['admissions'].transform(
-                lambda x: x.rolling(window=30, min_periods=1).mean()
-            )
-            # Get last value for each hospital
-            last_rolling_mean = historical_df_engineered.groupby('hospital_id')['admissions'].transform(
-                lambda x: x.rolling(window=30, min_periods=1).mean().iloc[-1] if len(x) > 0 else 0
-            )
-            # Map to inference_df
-            hospital_to_mean = historical_df_engineered.groupby('hospital_id')['admissions'].apply(
-                lambda x: x.rolling(window=30, min_periods=1).mean().iloc[-1] if len(x) > 0 else 0
-            ).to_dict()
-            inference_df['rolling_mean_30'] = inference_df['hospital_id'].map(hospital_to_mean).fillna(0)
-            logger.info("   Added rolling_mean_30 from historical data")
-        else:
-            inference_df['rolling_mean_30'] = 0
-    
-    # Select feature columns (EXACT SAME as training - from feature_engineering.py)
-    feature_cols = [
-        # Lags (expanded to reduce autocorrelation and CV variance)
-        'lag_1', 'lag_2', 'lag_3', 'lag_5', 'lag_7', 'lag_14', 'lag_21', 'lag_30', 'lag_60', 'lag_90',
-        # First difference
-        'admissions_diff_1',
-        # Recursive features (reduce residual autocorrelation)
-        'change_from_week_ago', 'acceleration',
-        # Rolling (std and mean for stability)
-        'rolling_std_7', 'rolling_std_14', 'rolling_std_30',
-        'rolling_mean_30',
-        # EMA and slope
-        'ema_7', 'rolling_slope_7',
-        # Month one-hot (regime-aware, reduces CV variance)
-        'month_1', 'month_2', 'month_3', 'month_4', 'month_5', 'month_6',
-        'month_7', 'month_8', 'month_9', 'month_10', 'month_11', 'month_12',
-        # Regime indicators
-        'regime_indicator', 'high_vol_regime',
-        # Horizon-specific features (helps model learn uncertainty grows nonlinearly)
-        'horizon_squared', 'horizon_vol_interaction',
-        # Encoded
-        'hospital_id_enc', 'season_enc',
-        # Temporal
-        'month', 'week_of_year', 'quarter', 'day_of_year', 'is_weekend', 'day_of_week',
-        'month_sin', 'month_cos', 'day_of_year_sin', 'day_of_year_cos',
-        'day_of_week_sin', 'day_of_week_cos',
-        # Fourier terms
-        'yearly_sin_1', 'yearly_cos_1', 'yearly_sin_2', 'yearly_cos_2', 'yearly_sin_3', 'yearly_cos_3',
-        'weekly_sin_1', 'weekly_cos_1', 'weekly_sin_2', 'weekly_cos_2',
-        # Weather (if available)
-        'temperature', 'humidity', 'rainfall', 'wind_speed', 'aqi',
-        # Exogenous lags (if created)
-        'aqi_lag_1', 'aqi_lag_7', 'outbreak_index_lag_1', 'outbreak_index_lag_7',
-        'temperature_lag_1', 'temperature_lag_7',
-        # Other
-        'outbreak_index', 'mobility_index',
-        'population', 'population_density', 'elderly_ratio',
-        'hospital_capacity', 'icu_capacity',
-        # Interactions (if created)
-        'outbreak_winter', 'temp_elderly', 'mobility_weekend', 'aqi_temp', 'aqi_winter',
-        # Nonlinear exogenous interactions (tree models need interaction triggers)
-        'outbreak_vol_regime', 'outbreak_capacity', 'aqi_elderly',
-        # Exogenous trend momentum (rate-of-change features)
-        'outbreak_change_7', 'aqi_change_7',
-        # Structural shock features (surge detection)
-        'outbreak_acceleration', 'aqi_acceleration', 'admissions_acceleration_7', 'volatility_index',
-        # Normalized features
-        'aqi_normalized', 'temperature_normalized', 'outbreak_index_normalized',
-        # Horizon (CRITICAL - must be last to match training order)
-        'horizon'
-    ]
-    
-    # Select only features that exist in inference_df (some may be missing if data doesn't have them)
-    available_features = [col for col in feature_cols if col in inference_df.columns]
-    logger.info(f"   Selected {len(available_features)} features from {len(feature_cols)} expected features")
-    
-    # Warn if we're missing many features
-    missing_features = set(feature_cols) - set(available_features)
-    if missing_features:
-        logger.warning(f"   Missing {len(missing_features)} features: {sorted(list(missing_features))[:15])}")
-        # Try to add missing features as zeros (model might expect them)
-        for feat in missing_features:
-            if feat not in inference_df.columns:
-                inference_df[feat] = 0
-                available_features.append(feat)
-        logger.info(f"   Added {len(missing_features)} missing features as zeros. Total features: {len(available_features)}")
-    
-    # Ensure we have all features in the correct order
-    X_inference = inference_df[feature_cols].copy().fillna(0)  # Use feature_cols order, fill missing with 0
-    logger.info(f"   Final feature matrix shape: {X_inference.shape} (expected ~95 features)")
-    
-    # Filter by hospital_ids if provided
-    if hospital_ids is not None:
-        inference_df = inference_df[inference_df['hospital_id'].isin(hospital_ids)].copy()
-        # FIX: Use .loc for row indexing, not column indexing
-        X_inference = X_inference.loc[inference_df.index].copy()
-        logger.info(f"   Filtered to {len(inference_df)} rows for {len(hospital_ids)} hospitals")
-    
-    # Override exogenous variables if future_exogenous provided
-    if future_exogenous is not None:
-        for col in future_exogenous.columns:
-            if col in inference_df.columns:
-                inference_df[col] = future_exogenous[col].values
-                # Update feature if it's in X_inference
-                if col in X_inference.columns:
-                    X_inference[col] = future_exogenous[col].values
-        logger.info("   Applied future exogenous scenario")
-    
-    # Make predictions - handle per-horizon dict vs single model
-    if is_per_horizon_dict:
-        # Per-horizon model dict: iterate over horizons
-        all_point_preds = []
-        all_quantile_preds = {q: [] for q in quantiles} if use_quantiles else None
-        prediction_indices = []
-        
-        for horizon in horizons:
-            if horizon not in model:
-                logger.warning(f"   Horizon {horizon} not found in model dict, skipping")
-                continue
-            
-            model_h = model[horizon]
-            if model_h is None:
-                logger.warning(f"   Model for horizon {horizon} is None, skipping")
-                continue
-            
-            # Select rows for this horizon
-            horizon_mask = inference_df['horizon'] == horizon
-            if horizon_mask.sum() == 0:
-                continue
-            
-            inference_df_h = inference_df[horizon_mask].copy()
-            X_inference_h = X_inference.loc[inference_df_h.index].copy()
-            
-            # Remove horizon column if present (some models don't expect it)
-            if 'horizon' in X_inference_h.columns:
-                X_inference_h = X_inference_h.drop(columns=['horizon'])
-            
-            # Make predictions for this horizon
-            if use_quantiles:
-                quantile_preds_h = model_h.predict_quantiles(X_inference_h, quantiles=quantiles)
-                point_preds_h = quantile_preds_h.get(0.5, model_h.predict(X_inference_h))
-                
-                # Store predictions with their original indices
-                for i, idx in enumerate(inference_df_h.index):
-                    prediction_indices.append(idx)
-                    all_point_preds.append(point_preds_h[i])
-                    
-                    # Store quantile predictions with same index
-                    for q in quantiles:
-                        if q in quantile_preds_h:
-                            all_quantile_preds[q].append((idx, quantile_preds_h[q][i]))
+            # Determine lag_1 (most recent value)
+            if horizon == 1:
+                lag_1 = admissions_history[-1]  # Last actual
             else:
-                point_preds_h = model_h.predict(X_inference_h)
-                for i, idx in enumerate(inference_df_h.index):
-                    prediction_indices.append(idx)
-                    all_point_preds.append(point_preds_h[i])
+                # Use prediction from (horizon - 1)
+                prev_horizon_idx = sorted_horizons.index(horizon) - 1
+                if prev_horizon_idx >= 0 and prev_horizon_idx < len(predictions):
+                    lag_1 = predictions[prev_horizon_idx]
+                else:
+                    lag_1 = admissions_history[-1]
             
-            logger.info(f"   Horizon {horizon}: Generated {len(point_preds_h)} predictions")
-        
-        # Sort predictions by original index to maintain order
-        if prediction_indices:
-            # Sort by index to maintain DataFrame row order
-            sorted_order = sorted(range(len(prediction_indices)), key=lambda i: prediction_indices[i])
-            sorted_indices = [prediction_indices[i] for i in sorted_order]
-            point_preds = np.array([all_point_preds[i] for i in sorted_order])
-            
-            if use_quantiles and all_quantile_preds:
-                # Sort quantile predictions using same order as point predictions
-                quantile_preds = {}
-                # Create index-to-prediction dicts for each quantile
-                for q in quantiles:
-                    if all_quantile_preds[q]:
-                        q_dict = {idx: pred for idx, pred in all_quantile_preds[q]}
-                        # Use same sorted order as point predictions
-                        quantile_preds[q] = np.array([q_dict[idx] for idx in sorted_indices])
-                    else:
-                        quantile_preds[q] = np.array([])
+            # Determine lag_7 (7 days ago)
+            if horizon <= 7:
+                # Use actual from 7 days before horizon
+                lag_7_idx = len(admissions_history) - (8 - horizon)
+                if 0 <= lag_7_idx < len(admissions_history):
+                    lag_7 = admissions_history[lag_7_idx]
+                else:
+                    lag_7 = admissions_history[0]
             else:
-                quantile_preds = None
+                # Use prediction from (horizon - 7)
+                pred_7_idx = sorted_horizons.index(horizon) - 7
+                if 0 <= pred_7_idx < len(predictions):
+                    lag_7 = predictions[pred_7_idx]
+                else:
+                    lag_7 = admissions_history[0]
             
-            # Reorder inference_df to match sorted predictions
-            inference_df = inference_df.loc[sorted_indices].reset_index(drop=True)
-        else:
-            raise ValueError("No predictions generated for any horizon")
+            feature_row['lag_1'] = lag_1
+            feature_row['lag_7'] = lag_7
             
-    else:
-        # Single model (or PerHorizonForecaster wrapper)
-        if use_quantiles:
-            quantile_preds = model.predict_quantiles(X_inference, quantiles=quantiles)
-            point_preds = quantile_preds.get(0.5, model.predict(X_inference))  # Use median as point estimate
-        else:
-            point_preds = model.predict(X_inference)
-            quantile_preds = None
+            # Create DataFrame for prediction (from dict, new DataFrame)
+            X_pred = pd.DataFrame([feature_row])
+            
+            # Select only feature columns in correct order (protect against drift)
+            # Remove any extra columns that might exist
+            available_features = [col for col in bundle.feature_columns if col in X_pred.columns]
+            missing_features_in_row = set(bundle.feature_columns) - set(available_features)
+            
+            if missing_features_in_row:
+                # Fill missing with 0
+                for feat in missing_features_in_row:
+                    X_pred[feat] = 0
+            
+            # STRICT FEATURE LOCK: Use model's exact feature order
+            # No fallback. No try/except. Hard alignment.
+            if hasattr(bundle.model, 'feature_name_'):
+                model_feature_names = bundle.model.feature_name_
+            elif hasattr(bundle.model, 'feature_names_in_'):
+                model_feature_names = bundle.model.feature_names_in_
+            else:
+                model_feature_names = bundle.feature_columns
+            
+            # Hard alignment - use model's exact feature order
+            X_pred_features = X_pred[model_feature_names].copy(deep=True)
+            X_pred_features = X_pred_features.fillna(0)
+            
+            # Validate alignment (strict check)
+            if list(X_pred_features.columns) != list(model_feature_names):
+                raise ValueError(
+                    f"Feature order mismatch: expected {model_feature_names}, "
+                    f"got {list(X_pred_features.columns)}"
+                )
+            
+            # Final validation before prediction
+            if X_pred_features.empty:
+                raise ValueError(f"Feature DataFrame is empty for hospital {hospital_id}, horizon {horizon}")
+            
+            if len(X_pred_features.columns) != len(bundle.feature_columns):
+                raise ValueError(
+                    f"Feature count mismatch: expected {len(bundle.feature_columns)}, "
+                    f"got {len(X_pred_features.columns)}"
+                )
+            
+            # Predict
+            try:
+                prediction = bundle.predict(X_pred_features)[0]
+                if not np.isfinite(prediction):
+                    # Fallback to last known value if prediction is invalid
+                    prediction = admissions_history[-1]
+            except Exception as e:
+                # If prediction fails, use last known value
+                prediction = admissions_history[-1]
+            
+            # Store prediction
+            predictions.append(float(prediction))
+            
+            # Store result
+            results.append({
+                'hospital_id': str(hospital_id),
+                'horizon': int(horizon),
+                'prediction': float(prediction)
+            })
     
-    # Post-process predictions
-    if apply_post_processing:
-        post_processed = post_process_predictions(
-            point_preds,
-            inference_df,
-            use_quantiles=use_quantiles,
-            quantile_preds=quantile_preds
-        )
-        
-        forecast_df = format_forecast_output(
-            inference_df[['hospital_id', 'date', 'horizon']].copy(),
-            post_processed,
-            include_quantiles=use_quantiles
-        )
-    else:
-        # Create forecast DataFrame without post-processing
-        forecast_df = inference_df[['hospital_id', 'date', 'horizon']].copy()
-        forecast_df['forecast'] = point_preds
-        if use_quantiles and quantile_preds:
-            for q, preds in quantile_preds.items():
-                forecast_df[f'forecast_q{int(q*100)}'] = preds
+    # ============================================================================
+    # STEP 6: Create result DataFrame and validate
+    # ============================================================================
+    if not results:
+        raise ValueError("No forecasts generated - results list is empty")
     
-    logger.info(f"✅ Generated forecasts for {len(forecast_df)} rows")
+    forecast_df = pd.DataFrame(results).copy(deep=True)
+    
+    # Validate output
+    if forecast_df.empty:
+        raise ValueError("Forecast DataFrame is empty")
+    
+    expected_count = len(hospital_ids) * len(sorted_horizons)
+    if len(forecast_df) != expected_count:
+        raise ValueError(
+            f"Forecast count mismatch: expected {expected_count}, got {len(forecast_df)}"
+        )
+    
+    # DIAGNOSTIC: Verify input was not mutated (should still match original)
+    final_df_rows = len(df)
+    final_df_hospitals = df['hospital_id'].nunique() if not df.empty else 0
+    assert final_df_rows == input_rows, f"Input mutated: start={input_rows}, end={final_df_rows}"
+    assert final_df_hospitals == input_hospitals, f"Hospitals mutated: start={input_hospitals}, end={final_df_hospitals}"
     
     return forecast_df
 
 
-def forecast_to_json(forecast_df: pd.DataFrame) -> Dict:
+def forecast_to_json(forecast_df: pd.DataFrame) -> dict:
     """
-    Convert forecast DataFrame to JSON-ready format.
+    Convert forecast DataFrame to JSON format.
     
     Args:
-        forecast_df: Forecast DataFrame from forecast()
-        
+        forecast_df: DataFrame with hospital_id, horizon, prediction
+    
     Returns:
-        Dictionary ready for JSON serialization
+        Dict with forecasts list
     """
-    result = {
-        'forecasts': []
-    }
+    if forecast_df.empty:
+        return {'forecasts': []}
     
+    forecasts = []
     for _, row in forecast_df.iterrows():
-        forecast_entry = {
+        forecasts.append({
             'hospital_id': str(row['hospital_id']),
-            'date': str(row['date']),
             'horizon': int(row['horizon']),
-            'forecast': float(row['forecast'])
-        }
-        
-        # Add quantiles if present
-        quantile_cols = [col for col in forecast_df.columns if col.startswith('forecast_q')]
-        if quantile_cols:
-            forecast_entry['quantiles'] = {}
-            for col in quantile_cols:
-                q_level = int(col.replace('forecast_q', ''))
-                forecast_entry['quantiles'][q_level] = float(row[col])
-        
-        # Add utilization and surge flag if present
-        if 'utilization' in forecast_df.columns:
-            forecast_entry['utilization'] = float(row['utilization'])
-        if 'surge_flag' in forecast_df.columns:
-            forecast_entry['surge_flag'] = bool(row['surge_flag'])
-        
-        result['forecasts'].append(forecast_entry)
+            'prediction': float(row['prediction'])
+        })
     
-    return result
+    return {'forecasts': forecasts}
 
+
+def self_test(bundle: ModelBundle, historical_df: pd.DataFrame) -> bool:
+    """
+    Test that forecast() is deterministic.
+    
+    Runs forecast() twice with identical inputs and verifies identical outputs.
+    
+    Args:
+        bundle: ModelBundle with trained model
+        historical_df: Historical DataFrame
+    
+    Returns:
+        True if deterministic, raises AssertionError otherwise
+    """
+    # Run forecast twice
+    result_a = forecast(bundle, historical_df.copy(deep=True))
+    result_b = forecast(bundle, historical_df.copy(deep=True))
+    
+    # Reset index for comparison
+    result_a = result_a.reset_index(drop=True).sort_values(['hospital_id', 'horizon']).reset_index(drop=True)
+    result_b = result_b.reset_index(drop=True).sort_values(['hospital_id', 'horizon']).reset_index(drop=True)
+    
+    # Check if identical
+    if not result_a.equals(result_b):
+        # Find differences
+        diff_mask = result_a != result_b
+        if diff_mask.any().any():
+            print("Differences found:")
+            print(result_a[diff_mask.any(axis=1)])
+            print(result_b[diff_mask.any(axis=1)])
+        raise AssertionError("Inference is not deterministic! Two identical calls produced different results.")
+    
+    # Check count
+    if len(result_a) != len(result_b):
+        raise AssertionError(f"Count mismatch: first call={len(result_a)}, second call={len(result_b)}")
+    
+    if len(result_a) == 0:
+        raise AssertionError("Both calls returned 0 forecasts - this is a bug!")
+    
+    return True

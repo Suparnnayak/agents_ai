@@ -1,13 +1,14 @@
 """
 Hospital Admissions 7-Day Forecasting System
 
-Production-ready forecasting system with:
-- Multiple model support (LightGBM, XGBoost, TFT)
-- Time-series cross-validation
-- Quantile regression
-- Weighted loss for hospital size balance
-- Comprehensive diagnostics
+Production V1: Simple, stable forecasting system.
+
+Features:
+- Single LightGBM model
+- Frozen feature schema (lag_1, lag_7)
+- ModelBundle for feature safety
+- Iterative prediction pipeline
 """
 
-__version__ = "2.0.0"
+__version__ = "1.0.0"
 
