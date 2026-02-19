@@ -8,8 +8,12 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 from typing import Generator
+from dotenv import load_dotenv
 
 from database.base import Base
+
+# Load .env values and override inherited env vars so local config is deterministic.
+load_dotenv(override=True)
 
 # Database URL from environment variable
 DATABASE_URL = os.getenv(

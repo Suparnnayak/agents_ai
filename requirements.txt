@@ -18,6 +18,10 @@ sqlalchemy>=2.0.0
 alembic>=1.13.0
 psycopg2-binary>=2.9.9
 
+# Auth
+bcrypt>=4.0.0
+python-jose[cryptography]>=3.3.0
+
 # Utilities
 python-dateutil>=2.8.0
 pytz>=2023.3
@@ -44,7 +48,7 @@ python-dotenv>=1.0.0
 rich>=13.7.0
 pydantic-settings>=2.2.1
 requests>=2.31.0  # For keep-alive script
-
+email-validator>=2.0.0
 # Optional: Cloud LLM support (install if using cloud LLM instead of Ollama)
 langchain-groq>=0.1.0  # For Groq support (FAST & FREE - highly recommended!)
 langchain-google-genai>=1.0.0  # For Google Gemini support (free tier available)
