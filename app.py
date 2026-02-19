@@ -4,21 +4,25 @@ Hospital Forecast API
 Production FastAPI application for hospital admissions forecasting.
 """
 
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Request, Depends, Query
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field, validator
 from typing import Optional, List
 import os
 import time
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from collections import defaultdict
 import subprocess
+from sqlalchemy.orm import Session
 
+import pandas as pd
 from forecast_system.inference import forecast, forecast_to_json
 from forecast_system.ingestion import load_data
 from forecast_system.model_bundle import ModelBundle
 from forecast_system.utils import get_logger
+from database.session import get_db
+from database import crud
 
 logger = get_logger(__name__)
 
@@ -93,6 +97,15 @@ async def load_model():
         if not data_loaded:
             print("⚠️  Warning: Historical data not found.")
             historical_data = None
+        
+        # Initialize database (create tables if they don't exist)
+        try:
+            from database.session import init_db
+            init_db()
+            print("✅ Database initialized")
+        except Exception as db_error:
+            print(f"⚠️  Warning: Database initialization failed: {db_error}")
+            print("   API will continue without database persistence")
             
     except Exception as e:
         print(f"❌ Error loading model: {e}")
@@ -219,7 +232,8 @@ def get_git_commit() -> Optional[str]:
 @app.post("/predict")
 def predict(
     request: ForecastRequest,
-    rate_limit: bool = Depends(check_rate_limit)
+    rate_limit: bool = Depends(check_rate_limit),
+    db: Session = Depends(get_db)
 ):
     """
     Generate hospital admissions forecasts.
@@ -311,6 +325,75 @@ def predict(
         # Calculate inference time
         inference_time = time.time() - start_time
         
+        # ========================================================================
+        # SAVE FORECASTS TO DATABASE
+        # ========================================================================
+        forecast_run_id = None
+        try:
+            # Get last date per hospital from historical data
+            last_dates = {}
+            for hosp_id in forecast_df['hospital_id'].unique():
+                hosp_data = raw_df[raw_df['hospital_id'] == hosp_id]
+                if not hosp_data.empty:
+                    last_date = pd.to_datetime(hosp_data['date']).max()
+                    last_dates[hosp_id] = last_date.to_pydatetime().date()
+            
+            # Create forecast run record
+            forecast_run = crud.create_forecast_run(
+                db=db,
+                hospital_count=hospital_count,
+                horizon_count=len(horizons),
+                total_forecasts=len(forecast_df),
+                inference_time_seconds=inference_time,
+                model_version="1.0.0",
+                user_id=None  # TODO: Add user authentication
+            )
+            forecast_run_id = forecast_run.id
+            
+            # Prepare forecast data for batch insert
+            forecasts_data = []
+            for _, row in forecast_df.iterrows():
+                hospital_id_str = str(row['hospital_id'])
+                horizon = int(row['horizon'])
+                prediction = float(row['prediction'])
+                
+                # Calculate forecast_date = last_date + horizon days
+                if hospital_id_str in last_dates:
+                    forecast_date = last_dates[hospital_id_str] + timedelta(days=horizon)
+                else:
+                    # Fallback: use today + horizon
+                    forecast_date = date.today() + timedelta(days=horizon)
+                
+                forecasts_data.append({
+                    "hospital_id": hospital_id_str,
+                    "horizon": horizon,
+                    "prediction": prediction,
+                    "forecast_date": forecast_date
+                })
+            
+            # Batch create forecasts
+            crud.create_forecasts_batch(
+                db=db,
+                forecast_run_id=forecast_run_id,
+                forecasts_data=forecasts_data
+            )
+            
+            # Commit transaction
+            db.commit()
+            
+            logger.info(
+                f"Forecasts saved to database | "
+                f"run_id={forecast_run_id} | "
+                f"forecasts={len(forecasts_data)}"
+            )
+            
+        except Exception as db_error:
+            # Rollback on database error
+            db.rollback()
+            logger.error(f"Database save failed: {db_error}")
+            # Continue without failing the request (graceful degradation)
+            # In production, you might want to raise an error or use a queue
+        
         # Log request metrics (structured logging)
         logger.info(
             f"Prediction successful | "
@@ -330,7 +413,8 @@ def predict(
             "metadata": {
                 "hospitals_requested": hospital_count,
                 "horizons_requested": len(horizons),
-                "inference_time_seconds": round(inference_time, 3)
+                "inference_time_seconds": round(inference_time, 3),
+                "forecast_run_id": str(forecast_run_id) if forecast_run_id else None
             }
         }
         
@@ -418,6 +502,100 @@ def list_hospitals():
         "hospitals": hospitals,
         "count": len(hospitals)
     }
+
+
+class ForecastResponse(BaseModel):
+    """Forecast response model."""
+    id: str
+    hospital_id: str
+    horizon: int
+    prediction: float
+    forecast_date: date
+    created_at: datetime
+
+
+class ForecastsListResponse(BaseModel):
+    """Forecasts list response with pagination."""
+    forecasts: List[ForecastResponse]
+    total: int
+    skip: int
+    limit: int
+
+
+@app.get("/forecasts", response_model=ForecastsListResponse)
+def get_forecasts(
+    hospital_id: Optional[str] = Query(None, description="Filter by hospital ID"),
+    start_date: Optional[date] = Query(None, description="Filter forecasts >= start_date (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="Filter forecasts <= end_date (YYYY-MM-DD)"),
+    horizon: Optional[int] = Query(None, ge=1, le=7, description="Filter by horizon (1-7)"),
+    skip: int = Query(0, ge=0, description="Pagination offset"),
+    limit: int = Query(100, ge=1, le=1000, description="Pagination limit (max 1000)"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get stored forecasts with filtering and pagination.
+    
+    Args:
+        hospital_id: Filter by hospital ID string
+        start_date: Filter forecasts >= start_date
+        end_date: Filter forecasts <= end_date
+        horizon: Filter by specific horizon (1-7)
+        skip: Pagination offset
+        limit: Pagination limit (max 1000)
+        db: Database session
+    
+    Returns:
+        Paginated list of forecasts
+    """
+    try:
+        # Get forecasts from database
+        forecasts = crud.get_forecasts(
+            db=db,
+            hospital_id=hospital_id,
+            start_date=start_date,
+            end_date=end_date,
+            horizon=horizon,
+            skip=skip,
+            limit=limit
+        )
+        
+        # Get total count
+        total = crud.get_forecast_count(
+            db=db,
+            hospital_id=hospital_id,
+            start_date=start_date,
+            end_date=end_date,
+            horizon=horizon
+        )
+        
+        # Convert to response format
+        forecast_responses = []
+        for f in forecasts:
+            # Get hospital_id string from Hospital relationship
+            hospital_id_str = f.hospital.hospital_id if f.hospital else "unknown"
+            
+            forecast_responses.append(ForecastResponse(
+                id=str(f.id),
+                hospital_id=hospital_id_str,
+                horizon=f.horizon,
+                prediction=f.prediction,
+                forecast_date=f.forecast_date,
+                created_at=f.created_at
+            ))
+        
+        return ForecastsListResponse(
+            forecasts=forecast_responses,
+            total=total,
+            skip=skip,
+            limit=limit
+        )
+        
+    except Exception as e:
+        logger.exception(f"Error retrieving forecasts: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Error retrieving forecasts"
+        )
 
 
 if __name__ == "__main__":
