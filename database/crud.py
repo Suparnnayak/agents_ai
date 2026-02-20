@@ -6,6 +6,7 @@ Transaction-safe database operations for forecasts and related data.
 
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, desc, func
+from sqlalchemy.dialects.postgresql import insert
 from typing import List, Optional, Dict, Any
 from datetime import date, datetime
 from uuid import UUID
@@ -156,23 +157,53 @@ def create_forecasts_batch(
     Returns:
         List of Forecast instances
     """
-    forecasts = []
+    if not forecasts_data:
+        return []
+
+    # Build/ensure hospital mapping first so we can upsert forecasts by FK UUID.
+    hospital_id_values = sorted({data["hospital_id"] for data in forecasts_data})
+    existing_hospitals = (
+        db.query(Hospital)
+        .filter(Hospital.hospital_id.in_(hospital_id_values))
+        .all()
+    )
+    hospital_map: Dict[str, Hospital] = {
+        hospital.hospital_id: hospital for hospital in existing_hospitals
+    }
+
+    for hospital_id in hospital_id_values:
+        if hospital_id not in hospital_map:
+            hospital_map[hospital_id] = get_or_create_hospital(db, hospital_id)
+
+    db.flush()
+
+    created_at = datetime.utcnow()
+    forecast_rows: List[Dict[str, Any]] = []
     for data in forecasts_data:
-        # Get or create hospital
-        hospital = get_or_create_hospital(db, data["hospital_id"])
-        
-        # Create forecast
-        forecast = create_forecast(
-            db=db,
-            forecast_run_id=forecast_run_id,
-            hospital_id=hospital.id,
-            horizon=data["horizon"],
-            prediction=data["prediction"],
-            forecast_date=data["forecast_date"]
+        forecast_rows.append(
+            {
+                "id": uuid.uuid4(),
+                "forecast_run_id": forecast_run_id,
+                "hospital_id": hospital_map[data["hospital_id"]].id,
+                "horizon": data["horizon"],
+                "prediction": data["prediction"],
+                "forecast_date": data["forecast_date"],
+                "created_at": created_at,
+            }
         )
-        forecasts.append(forecast)
-    
-    return forecasts
+
+    insert_stmt = insert(Forecast).values(forecast_rows)
+    on_conflict_stmt = insert_stmt.on_conflict_do_update(
+        index_elements=["hospital_id", "forecast_date", "horizon"],
+        set_={
+            "prediction": insert_stmt.excluded.prediction,
+            "forecast_run_id": insert_stmt.excluded.forecast_run_id,
+            "created_at": insert_stmt.excluded.created_at,
+        },
+    )
+    db.execute(on_conflict_stmt)
+
+    return []
 
 
 def get_forecasts(

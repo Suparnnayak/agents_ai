@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from sqlalchemy.orm import Session
 
 from app.auth.schemas import UserCreate, UserLogin, UserResponse, TokenResponse
@@ -13,11 +13,64 @@ from database.session import get_db
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register_user(user_in: UserCreate, db: Session = Depends(get_db)) -> UserResponse:
-    """Register a new user."""
+def _cors_response(request: Request) -> Response:
+    """Create CORS response for preflight requests."""
+    origin = request.headers.get("origin", "")
+    allowed_origins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
+        "http://localhost:3003",
+    ]
+    
+    # Use the request origin if it's in allowed list, otherwise use the first allowed origin
+    allow_origin = origin if origin in allowed_origins else allowed_origins[0]
+    
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": allow_origin,
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Max-Age": "3600",
+        },
+    )
+
+
+@router.options("/register")
+async def options_register(request: Request):
+    """Handle CORS preflight for /register."""
+    return _cors_response(request)
+
+
+@router.options("/login")
+async def options_login(request: Request):
+    """Handle CORS preflight for /login."""
+    return _cors_response(request)
+
+
+@router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+def register_user(user_in: UserCreate, db: Session = Depends(get_db)) -> TokenResponse:
+    """Register a new user and return JWT token."""
     user = create_user(db, user_in)
-    return UserResponse.model_validate(user)
+    
+    settings = get_settings()
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={
+            "sub": str(user.id),
+            "email": user.email,
+            "role": user.role,
+        },
+        expires_delta=access_token_expires,
+    )
+    return TokenResponse(
+        access_token=access_token,
+        token_type="bearer",
+        user=UserResponse.model_validate(user),
+    )
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -41,7 +94,11 @@ def login(user_in: UserLogin, db: Session = Depends(get_db)) -> TokenResponse:
         },
         expires_delta=access_token_expires,
     )
-    return TokenResponse(access_token=access_token, token_type="bearer")
+    return TokenResponse(
+        access_token=access_token,
+        token_type="bearer",
+        user=UserResponse.model_validate(user),
+    )
 
 
 

@@ -1,7 +1,7 @@
 """Main FastAPI application instance for the Hospital Forecast API."""
 
 from fastapi import FastAPI, HTTPException, Request, Depends, Query
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
 from typing import Optional, List
 import os
@@ -30,6 +30,23 @@ app = FastAPI(
     title="Hospital Forecast API",
     description="7-day hospital admissions forecasting system",
     version="1.0.0",
+)
+
+# CORS middleware — allow frontend origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
+        "http://localhost:3003",
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,
 )
 
 # Include authentication routes
