@@ -61,6 +61,7 @@ class Hospital(Base):
     # Relationships
     admission_history = relationship("AdmissionHistory", back_populates="hospital", cascade="all, delete-orphan")
     forecasts = relationship("Forecast", back_populates="hospital", cascade="all, delete-orphan")
+    external_signals = relationship("ExternalSignal", back_populates="hospital")
     
     # Indexes
     __table_args__ = (
@@ -140,5 +141,34 @@ class Forecast(Base):
         Index("idx_forecast_run", "forecast_run_id"),
         Index("idx_forecast_horizon", "horizon"),
         UniqueConstraint("hospital_id", "forecast_date", "horizon", name="uq_hospital_date_horizon"),
+    )
+
+
+class ExternalSignal(Base):
+    """
+    External exogenous signals fetched from free public APIs.
+    """
+    __tablename__ = "external_signals"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    hospital_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("hospitals.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    date = Column(Date, nullable=False)
+    temperature = Column(Float, nullable=False, default=0.0)
+    aqi = Column(Float, nullable=False, default=0.0)
+    outbreak_index = Column(Float, nullable=False, default=0.0)
+    mobility_index = Column(Float, nullable=False, default=0.0)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    hospital = relationship("Hospital", back_populates="external_signals")
+
+    __table_args__ = (
+        Index("idx_external_signal_hospital_date", "hospital_id", "date"),
+        UniqueConstraint("hospital_id", "date", name="uq_external_signal_hospital_date"),
     )
 

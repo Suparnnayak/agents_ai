@@ -7,7 +7,7 @@ No state mutation. No inplace operations. All operations on deep copies.
 
 import pandas as pd
 import numpy as np
-from typing import List
+from typing import Dict, List, Optional
 from datetime import timedelta
 
 from forecast_system.model_bundle import ModelBundle
@@ -16,7 +16,8 @@ from forecast_system.model_bundle import ModelBundle
 def forecast(
     bundle: ModelBundle,
     raw_df: pd.DataFrame,
-    horizons: List[int] = [1, 2, 3, 4, 5, 6, 7]
+    horizons: List[int] = [1, 2, 3, 4, 5, 6, 7],
+    external_signals_by_hospital: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> pd.DataFrame:
     """
     Generate forecasts using iterative prediction.
@@ -28,6 +29,7 @@ def forecast(
         bundle: ModelBundle with trained model
         raw_df: Historical DataFrame (must have 'admissions' column)
         horizons: List of horizons to forecast [1, 2, 3, 4, 5, 6, 7]
+        external_signals_by_hospital: Optional latest DB signals keyed by hospital_id
     
     Returns:
         DataFrame with columns: hospital_id, horizon, prediction
@@ -40,6 +42,7 @@ def forecast(
     input_hospitals = raw_df['hospital_id'].nunique() if not raw_df.empty else 0
     
     df = raw_df.copy(deep=True)
+    external_signals_by_hospital = external_signals_by_hospital or {}
     
     # Validate input
     if df.empty:
@@ -178,6 +181,15 @@ def forecast(
             
             feature_row['lag_1'] = lag_1
             feature_row['lag_7'] = lag_7
+
+            # Merge latest external signals from DB for inference-time exogenous features.
+            # If no signal exists, keep historical values from feature_row (deterministic fallback).
+            signal_values = external_signals_by_hospital.get(str(hospital_id))
+            if signal_values:
+                feature_row['temperature'] = signal_values.get('temperature', feature_row.get('temperature', 0.0))
+                feature_row['aqi'] = signal_values.get('aqi', feature_row.get('aqi', 0.0))
+                feature_row['outbreak_index'] = signal_values.get('outbreak_index', feature_row.get('outbreak_index', 0.0))
+                feature_row['mobility_index'] = signal_values.get('mobility_index', feature_row.get('mobility_index', 0.0))
             
             # Create DataFrame for prediction (from dict, new DataFrame)
             X_pred = pd.DataFrame([feature_row])

@@ -27,6 +27,10 @@ from database import crud
 from database.models import User
 from app.auth.router import router as auth_router
 from app.dependencies import get_current_user, require_admin
+from app.services.external_data_service import (
+    fetch_and_store_external_signals,
+    get_latest_external_signals_by_hospital,
+)
 
 logger = get_logger(__name__)
 
@@ -329,10 +333,16 @@ def predict(
             )
         
         # Generate forecasts (pass deep copy, never shared object)
+        target_hospital_ids = sorted(raw_df["hospital_id"].unique().tolist())
+        latest_external_signals = get_latest_external_signals_by_hospital(
+            db=db,
+            hospital_ids=target_hospital_ids,
+        )
         forecast_df = forecast(
             bundle=bundle,
             raw_df=raw_df.copy(deep=True),
-            horizons=horizons
+            horizons=horizons,
+            external_signals_by_hospital=latest_external_signals,
         )
         
         # Validate forecast output
@@ -542,6 +552,14 @@ class ForecastsListResponse(BaseModel):
     limit: int
 
 
+class ExternalSignalsTaskResponse(BaseModel):
+    status: str
+    hospitals_total: int
+    processed: int
+    failed: int
+    upserted: int
+
+
 @app.get("/forecasts", response_model=ForecastsListResponse)
 def get_forecasts(
     hospital_id: Optional[str] = Query(None, description="Filter by hospital ID"),
@@ -616,6 +634,29 @@ def get_forecasts(
             status_code=500,
             detail="Error retrieving forecasts"
         )
+
+
+@app.post(
+    "/tasks/fetch-external-signals",
+    response_model=ExternalSignalsTaskResponse,
+    dependencies=[Depends(require_admin)],
+)
+def run_fetch_external_signals_task(db: Session = Depends(get_db)):
+    """
+    Fetch free external signals for all hospitals and upsert into DB.
+    """
+    try:
+        summary = fetch_and_store_external_signals(db)
+        return ExternalSignalsTaskResponse(
+            status="success",
+            hospitals_total=summary["hospitals_total"],
+            processed=summary["processed"],
+            failed=summary["failed"],
+            upserted=summary["upserted"],
+        )
+    except Exception as e:
+        logger.exception(f"External signal task failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch external signals")
 
 
 if __name__ == "__main__":

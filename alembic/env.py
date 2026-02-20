@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # Import database models
 from database.base import Base
-from database.models import User, Hospital, AdmissionHistory, ForecastRun, Forecast
+from database.models import User, Hospital, AdmissionHistory, ForecastRun, Forecast, ExternalSignal
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

@@ -9,15 +9,19 @@ env/
 ENV/
 .venv/
 
-# Model files (optional - uncomment if you want to exclude large model files)
-# models/*.json
-# models/*.txt
-# models/*.pt
-# models/*.pth
+# Model files (large binaries)
+*.pkl
+*.pickle
+*.pt
+*.pth
+*.h5
+*.onnx
+models/forecast_system/*.pkl
 
 # IDE
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 *~
@@ -25,18 +29,20 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Logs
 *.log
 logs/
 
-# Data (optional - uncomment if you want to exclude data files)
+# Data
 # generated_datasets_ml_ready/
 # *.csv
 
 # Environment
 .env
 .env.local
+.env.production
 
 # Jupyter
 .ipynb_checkpoints/
@@ -59,4 +65,13 @@ out/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.turbo/
+
+# Neon / MCP
+.agents/
+
+# Misc
+*.bak
+*.tmp
+*.temp
 

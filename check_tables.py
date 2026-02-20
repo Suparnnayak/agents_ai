@@ -27,7 +27,7 @@ try:
             print(f"  - {table}")
         
         # Check if expected tables exist
-        expected = ['users', 'hospitals', 'admission_history', 'forecast_runs', 'forecasts', 'alembic_version']
+        expected = ['users', 'hospitals', 'admission_history', 'forecast_runs', 'forecasts', 'external_signals', 'alembic_version']
         missing = [t for t in expected if t not in tables]
         
         if missing:

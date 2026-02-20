@@ -22,6 +22,10 @@ from database import crud
 from database.models import User
 from app.auth.router import router as auth_router
 from app.dependencies import get_current_user, require_admin
+from app.services.external_data_service import (
+    fetch_and_store_external_signals,
+    get_latest_external_signals_by_hospital,
+)
 
 
 logger = get_logger(__name__)
@@ -89,7 +93,7 @@ async def load_model():
                 bundle = ModelBundle.load(path_str)
                 model_path_used = path_str
                 model_loaded_at = datetime.now().isoformat()
-                print(f"✅ Model loaded from: {path_str}")
+                print(f"[OK] Model loaded from: {path_str}")
                 model_loaded = True
                 break
 
@@ -111,12 +115,12 @@ async def load_model():
             path_str = str(path)
             if os.path.exists(path_str):
                 historical_data = load_data(path_str)
-                print(f"✅ Historical data loaded from: {path_str}")
+                print(f"[OK] Historical data loaded from: {path_str}")
                 data_loaded = True
                 break
 
         if not data_loaded:
-            print("⚠️  Warning: Historical data not found.")
+            print("[WARN] Historical data not found.")
             historical_data = None
 
         # Initialize database (create tables if they don't exist)
@@ -124,13 +128,13 @@ async def load_model():
             from database.session import init_db
 
             init_db()
-            print("✅ Database initialized")
+            print("[OK] Database initialized")
         except Exception as db_error:
-            print(f"⚠️  Warning: Database initialization failed: {db_error}")
+            print(f"[WARN] Database initialization failed: {db_error}")
             print("   API will continue without database persistence")
 
     except Exception as e:
-        print(f"❌ Error loading model: {e}")
+        print(f"[ERROR] Error loading model: {e}")
         raise
 
 
@@ -336,10 +340,16 @@ def predict(
             )
 
         # Generate forecasts (pass deep copy, never shared object)
+        target_hospital_ids = sorted(raw_df["hospital_id"].unique().tolist())
+        latest_external_signals = get_latest_external_signals_by_hospital(
+            db=db,
+            hospital_ids=target_hospital_ids,
+        )
         forecast_df = forecast(
             bundle=bundle,
             raw_df=raw_df.copy(deep=True),
             horizons=horizons,
+            external_signals_by_hospital=latest_external_signals,
         )
 
         # Validate forecast output
@@ -507,6 +517,14 @@ class ForecastsListResponse(BaseModel):
     limit: int
 
 
+class ExternalSignalsTaskResponse(BaseModel):
+    status: str
+    hospitals_total: int
+    processed: int
+    failed: int
+    upserted: int
+
+
 @app.get("/forecasts", response_model=ForecastsListResponse)
 def get_forecasts(
     hospital_id: Optional[str] = Query(None, description="Filter by hospital ID"),
@@ -573,6 +591,29 @@ def get_forecasts(
             status_code=500,
             detail="Error retrieving forecasts",
         )
+
+
+@app.post(
+    "/tasks/fetch-external-signals",
+    response_model=ExternalSignalsTaskResponse,
+    dependencies=[Depends(require_admin)],
+)
+def run_fetch_external_signals_task(db: Session = Depends(get_db)):
+    """
+    Fetch free external signals for all hospitals and upsert into DB.
+    """
+    try:
+        summary = fetch_and_store_external_signals(db)
+        return ExternalSignalsTaskResponse(
+            status="success",
+            hospitals_total=summary["hospitals_total"],
+            processed=summary["processed"],
+            failed=summary["failed"],
+            upserted=summary["upserted"],
+        )
+    except Exception as e:
+        logger.exception(f"External signal task failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch external signals")
 
 
 
