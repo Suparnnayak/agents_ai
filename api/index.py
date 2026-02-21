@@ -1,9 +1,11 @@
 """
 Vercel Serverless Entry Point
 =============================
-Wraps the FastAPI application with the Mangum adapter so it can be
-served as an AWS Lambda-compatible handler that Vercel's Python runtime
-invokes on every request.
+Vercel's @vercel/python runtime natively understands ASGI applications.
+We simply re-export the FastAPI ``app`` object — Vercel handles the
+Lambda ↔ ASGI translation internally.
+
+No Mangum adapter is needed (Mangum is for raw AWS Lambda / API Gateway).
 
 All routes registered on ``app.main.app`` are exposed unchanged:
     /health, /hospitals, /forecast/latest, /predict, /auth/*, etc.
@@ -11,10 +13,4 @@ All routes registered on ``app.main.app`` are exposed unchanged:
 No background tasks, no file-system writes, no in-process schedulers.
 """
 
-from mangum import Mangum
-from app.main import app
-
-# Mangum translates API Gateway / Lambda events ↔ ASGI.
-# Vercel's Python runtime calls ``handler(event, context)``.
-handler = Mangum(app, lifespan="off")
-
+from app.main import app  # noqa: F401 — Vercel detects this ASGI app

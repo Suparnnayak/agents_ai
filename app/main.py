@@ -131,7 +131,7 @@ _load_model_bundle()
 
 
 # ---------------------------------------------------------------------------
-# ASGI lifespan (kept for local uvicorn; Mangum uses lifespan="off")
+# ASGI lifespan (kept for local uvicorn; Vercel handles cold-start separately)
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(application: FastAPI):
