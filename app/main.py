@@ -284,69 +284,6 @@ class ExternalSignalsTaskResponse(BaseModel):
 
 
 # ============================================================================
-# TEMPORARY DEBUG — remove after fixing auth issue
-# ============================================================================
-
-
-@app.get("/debug/token-test")
-def debug_token_test(request: Request):
-    """Temporary debug endpoint to diagnose JWT decode on Vercel."""
-    from jose import jwt as jose_jwt
-    from app.core.config import get_settings
-
-    settings = get_settings()
-    sk = settings.SECRET_KEY
-
-    # RAW TEST 1: hardcoded key (bypasses settings entirely)
-    hardcoded_key = "debug-test-key-12345"
-    raw_token = jose_jwt.encode({"sub": "raw-test"}, hardcoded_key, algorithm="HS256")
-    try:
-        raw_decoded = jose_jwt.decode(raw_token, hardcoded_key, algorithms=["HS256"])
-        raw_test = "SUCCESS"
-    except Exception as e:
-        raw_decoded = None
-        raw_test = f"FAILED: {e}"
-
-    # RAW TEST 2: settings SECRET_KEY
-    settings_token = jose_jwt.encode({"sub": "settings-test"}, sk, algorithm="HS256")
-    try:
-        settings_decoded = jose_jwt.decode(settings_token, sk, algorithms=["HS256"])
-        settings_test = "SUCCESS"
-    except Exception as e:
-        settings_decoded = None
-        settings_test = f"FAILED: {e}"
-
-    # RAW TEST 3: second call to get_settings to check consistency
-    sk2 = get_settings().SECRET_KEY
-    same_key = sk == sk2
-
-    # RAW TEST 4: decode incoming token with settings key
-    auth_header = request.headers.get("authorization", "")
-    incoming_token = auth_header.split(" ", 1)[1] if auth_header.startswith("Bearer ") else None
-    incoming_error = None
-    if incoming_token:
-        try:
-            jose_jwt.decode(incoming_token, sk, algorithms=["HS256"])
-            incoming_test = "SUCCESS"
-        except Exception as e:
-            incoming_test = "FAILED"
-            incoming_error = str(e)
-    else:
-        incoming_test = "NO_TOKEN"
-
-    return {
-        "secret_key_length": len(sk),
-        "secret_key_first_8_repr": repr(sk[:8]),
-        "secret_key_consistent": same_key,
-        "raw_hardcoded_test": raw_test,
-        "raw_settings_test": settings_test,
-        "incoming_test": incoming_test,
-        "incoming_error": incoming_error,
-        "jose_version": jose_jwt.__version__ if hasattr(jose_jwt, '__version__') else "unknown",
-    }
-
-
-# ============================================================================
 # BASIC ENDPOINTS
 # ============================================================================
 
