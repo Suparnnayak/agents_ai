@@ -302,6 +302,8 @@ def root():
             "/forecast/history": "Admission history (GET)",
             "/system/status": "System status (GET)",
             "/predict": "Precomputed forecasts (POST, backward-compatible)",
+            "/auth/register": "Register new user (POST)",
+            "/auth/login": "Login and get JWT (POST)",
             "/docs": "API documentation",
         },
     }
