@@ -291,26 +291,38 @@ class ExternalSignalsTaskResponse(BaseModel):
 @app.get("/debug/token-test")
 def debug_token_test(request: Request):
     """Temporary debug endpoint to diagnose JWT decode on Vercel."""
-    from app.auth.security import decode_access_token
+    from app.auth.security import decode_access_token, create_access_token
     from app.core.config import get_settings
+    from jose import jwt as jose_jwt
 
-    auth_header = request.headers.get("authorization", "")
-    if not auth_header.startswith("Bearer "):
-        return {"error": "No Bearer token in Authorization header", "header": auth_header[:50]}
-
-    token = auth_header.split(" ", 1)[1]
     settings = get_settings()
+    sk = settings.SECRET_KEY
 
-    # Step 1: Can we decode?
-    payload = decode_access_token(token)
+    # Create a test token right here and try to decode it
+    test_token = create_access_token(data={"sub": "test-uuid", "email": "debug@test.com"})
+    test_decode = decode_access_token(test_token)
+
+    # Also try raw jose decode
+    auth_header = request.headers.get("authorization", "")
+    incoming_token = auth_header.split(" ", 1)[1] if auth_header.startswith("Bearer ") else None
+
+    raw_decode = None
+    raw_error = None
+    if incoming_token:
+        try:
+            raw_decode = jose_jwt.decode(incoming_token, sk, algorithms=["HS256"])
+        except Exception as e:
+            raw_error = str(e)
 
     return {
-        "secret_key_starts_with": settings.SECRET_KEY[:8] + "...",
+        "secret_key_length": len(sk),
+        "secret_key_repr": repr(sk[:12]),
         "algorithm": settings.ALGORITHM,
-        "token_length": len(token),
-        "decode_result": "SUCCESS" if payload else "FAILED",
-        "payload_sub": payload.get("sub") if payload else None,
-        "payload_exp": payload.get("exp") if payload else None,
+        "self_create_decode": "SUCCESS" if test_decode else "FAILED",
+        "incoming_token_length": len(incoming_token) if incoming_token else 0,
+        "incoming_decode": "SUCCESS" if raw_decode else "FAILED",
+        "incoming_error": raw_error,
+        "incoming_sub": raw_decode.get("sub") if raw_decode else None,
     }
 
 
