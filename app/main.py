@@ -81,19 +81,28 @@ def _load_model_bundle() -> None:
     logger.warning("[WARN] Model bundle not found — /model-info will be unavailable")
 
 
-def _init_db_tables() -> None:
-    """Ensure DB tables exist (safe to call repeatedly)."""
+def _verify_db_connection() -> None:
+    """
+    Lightweight DB smoke-test at cold start.
+
+    Does NOT call Base.metadata.create_all() — schema is managed
+    exclusively by Alembic migrations.  This only opens one connection
+    and runs ``SELECT 1`` to surface config errors early.
+    """
+    from database.session import SessionLocal
+
     try:
-        from database.session import init_db
-        init_db()
-        logger.info("[OK] Database initialized")
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        db.close()
+        logger.info("[OK] Database connection verified")
     except Exception as exc:
-        logger.warning(f"[WARN] Database initialization skipped: {exc}")
+        logger.warning(f"[WARN] Database connection failed: {exc}")
 
 
 # Run once at module-import time so both local uvicorn and Vercel
 # cold-starts get the same behavior without relying on ASGI lifespan.
-_init_db_tables()
+_verify_db_connection()
 _load_model_bundle()
 
 

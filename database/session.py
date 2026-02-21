@@ -76,10 +76,17 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def init_db():
-    """Initialize database tables (creates all tables if they don't exist)."""
+    """
+    DEV / SEED ONLY — create tables via SQLAlchemy metadata.
+
+    In production the schema is managed exclusively by Alembic.
+    The FastAPI app does NOT call this function; it exists only for:
+      - scripts/seed_db_from_csv.py  (one-time bootstrap)
+      - Local development convenience
+    """
     Base.metadata.create_all(bind=engine)
 
 
 def drop_db():
-    """Drop all database tables (use with caution!)."""
+    """Drop all database tables (use with caution — dev only!)."""
     Base.metadata.drop_all(bind=engine)
