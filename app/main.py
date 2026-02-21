@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
-from typing import Optional, List
+from typing import Optional, List, Any
 import os
 import time
 from pathlib import Path
@@ -24,7 +24,7 @@ import subprocess
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func, text
 
-from forecast_system.model_bundle import ModelBundle
+# ---------- lightweight internal imports (no ML libraries) ----------
 from forecast_system.utils import get_logger
 from database.session import get_db
 from database import crud
@@ -43,6 +43,10 @@ from app.services.external_data_service import (
     get_latest_external_signals_by_hospital,
 )
 
+# NOTE: ModelBundle is imported lazily inside _load_model_bundle() so that
+# the heavy ML stack (joblib, pandas, numpy, lightgbm, scikit-learn) is
+# NOT required for the Vercel serverless deployment — where the API only
+# serves pre-computed forecasts from the database.
 
 logger = get_logger(__name__)
 
@@ -53,14 +57,31 @@ MODEL_PATH = os.getenv(
     "MODEL_PATH", "models/forecast_system/lightgbm_final.pkl"
 )
 
-bundle: Optional[ModelBundle] = None
+bundle: Any = None                    # Optional[ModelBundle] when ML libs are present
 model_loaded_at: Optional[str] = None
 model_path_used: Optional[str] = None
 
 
 def _load_model_bundle() -> None:
-    """Load the model bundle from disk (called once at cold start)."""
+    """
+    Load the model bundle from disk (called once at cold start).
+
+    This is fully optional.  If the ML libraries (joblib, lightgbm,
+    scikit-learn …) are not installed — e.g. in Vercel serverless —
+    the function logs a warning and returns.  All forecast endpoints
+    serve pre-computed DB data and never touch the model.
+    """
     global bundle, model_loaded_at, model_path_used
+
+    try:
+        from forecast_system.model_bundle import ModelBundle
+    except ImportError as exc:
+        logger.info(
+            f"[SKIP] ML libraries not installed ({exc}) — "
+            "model loading skipped.  All forecast endpoints still work "
+            "(pre-computed data from DB)."
+        )
+        return
 
     project_root = Path(__file__).resolve().parent.parent
 
@@ -72,10 +93,13 @@ def _load_model_bundle() -> None:
     for path in candidate_paths:
         path_str = str(path)
         if os.path.exists(path_str):
-            bundle = ModelBundle.load(path_str)
-            model_path_used = path_str
-            model_loaded_at = datetime.now().isoformat()
-            logger.info(f"[OK] Model loaded from: {path_str}")
+            try:
+                bundle = ModelBundle.load(path_str)
+                model_path_used = path_str
+                model_loaded_at = datetime.now().isoformat()
+                logger.info(f"[OK] Model loaded from: {path_str}")
+            except Exception as load_exc:
+                logger.warning(f"[WARN] Model load failed: {load_exc}")
             return
 
     logger.warning("[WARN] Model bundle not found — /model-info will be unavailable")
