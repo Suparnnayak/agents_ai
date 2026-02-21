@@ -284,6 +284,37 @@ class ExternalSignalsTaskResponse(BaseModel):
 
 
 # ============================================================================
+# TEMPORARY DEBUG — remove after fixing auth issue
+# ============================================================================
+
+
+@app.get("/debug/token-test")
+def debug_token_test(request: Request):
+    """Temporary debug endpoint to diagnose JWT decode on Vercel."""
+    from app.auth.security import decode_access_token
+    from app.core.config import get_settings
+
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return {"error": "No Bearer token in Authorization header", "header": auth_header[:50]}
+
+    token = auth_header.split(" ", 1)[1]
+    settings = get_settings()
+
+    # Step 1: Can we decode?
+    payload = decode_access_token(token)
+
+    return {
+        "secret_key_starts_with": settings.SECRET_KEY[:8] + "...",
+        "algorithm": settings.ALGORITHM,
+        "token_length": len(token),
+        "decode_result": "SUCCESS" if payload else "FAILED",
+        "payload_sub": payload.get("sub") if payload else None,
+        "payload_exp": payload.get("exp") if payload else None,
+    }
+
+
+# ============================================================================
 # BASIC ENDPOINTS
 # ============================================================================
 
