@@ -1,15 +1,15 @@
-name: Fetch External Signals
+name: Daily Forecast Job
 
 on:
   schedule:
-    - cron: "0 2 * * *"  # Daily at 2:00 AM UTC
-  workflow_dispatch:       # Allow manual trigger
+    - cron: "30 2 * * *"  # Daily at 2:30 AM UTC (after signals)
+  workflow_dispatch:        # Allow manual trigger
 
 permissions:
   contents: read
 
 jobs:
-  fetch-signals:
+  daily-forecast:
     runs-on: ubuntu-latest
 
     env:
@@ -28,9 +28,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-signals-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-pip-forecast-${{ hashFiles('requirements.txt') }}
           restore-keys: |
-            ${{ runner.os }}-pip-signals-
+            ${{ runner.os }}-pip-forecast-
 
       - name: Install dependencies
         run: |
@@ -40,7 +40,8 @@ jobs:
 
       - name: Verify imports
         run: |
-          python -c "from app.services.external_data_service import fetch_and_store_external_signals; print('Import OK')"
+          python -c "from scripts.daily_forecast_job import main; print('Import OK')"
 
-      - name: Fetch and store external signals
-        run: python -m scripts.fetch_external_signals
+      - name: Run daily forecast job
+        run: python -m scripts.daily_forecast_job
+

@@ -2,14 +2,18 @@
 Standalone script to fetch external signals (weather, AQI) and store them.
 
 Designed to be run by GitHub Actions cron, local scheduler, or manually.
-No FastAPI dependency — connects directly to the database.
+No FastAPI dependency -- connects directly to the database.
 
 Usage:
-    python fetch_external_signals.py
+    python -m scripts.fetch_external_signals
 """
 
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
+
+# Ensure project root is on sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from database.session import SessionLocal
 from app.services.external_data_service import fetch_and_store_external_signals
@@ -37,7 +41,7 @@ def main() -> int:
         print(f"WARNING: {result['failed']} hospital(s) failed to fetch signals")
 
     if result["upserted"] == 0 and result["hospitals_total"] > 0:
-        print("WARNING: No rows upserted despite hospitals existing — check API connectivity")
+        print("WARNING: No rows upserted despite hospitals existing -- check API connectivity")
         return 1
 
     print(f"[{datetime.now(timezone.utc).isoformat()}] Done.")

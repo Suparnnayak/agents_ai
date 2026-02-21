@@ -1,3 +1,4 @@
+import os
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
@@ -12,21 +13,20 @@ from database.session import get_db
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+# CORS origins — driven by env var, no hardcoded localhost
+_ALLOWED_ORIGINS = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001",
+).split(",")
+
 
 def _cors_response(request: Request) -> Response:
     """Create CORS response for preflight requests."""
     origin = request.headers.get("origin", "")
-    allowed_origins = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",
-        "http://localhost:3002",
-        "http://localhost:3003",
-    ]
-    
+
     # Use the request origin if it's in allowed list, otherwise use the first allowed origin
-    allow_origin = origin if origin in allowed_origins else allowed_origins[0]
-    
+    allow_origin = origin if origin in _ALLOWED_ORIGINS else _ALLOWED_ORIGINS[0]
+
     return Response(
         status_code=200,
         headers={

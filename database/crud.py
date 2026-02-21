@@ -1,19 +1,24 @@
 """
 CRUD operations for database models.
 
-Transaction-safe database operations for forecasts and related data.
+Transaction-safe database operations for the DB-driven forecast system.
 """
 
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, desc, func
+from sqlalchemy import and_, or_, desc, func, asc
 from sqlalchemy.dialects.postgresql import insert
 from typing import List, Optional, Dict, Any
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from uuid import UUID
 import uuid
 
 from database.models import (
-    User, Hospital, AdmissionHistory, ForecastRun, Forecast
+    User,
+    Hospital,
+    AdmissionHistory,
+    ForecastRun,
+    Forecast,
+    ExternalSignal,
 )
 
 
@@ -21,35 +26,30 @@ from database.models import (
 # Hospital CRUD
 # ============================================================================
 
+
 def get_hospital_by_id(db: Session, hospital_id: str) -> Optional[Hospital]:
     """Get hospital by hospital_id string."""
     return db.query(Hospital).filter(Hospital.hospital_id == hospital_id).first()
 
 
 def get_or_create_hospital(db: Session, hospital_id: str, **kwargs) -> Hospital:
-    """
-    Get existing hospital or create new one.
-    
-    Args:
-        db: Database session
-        hospital_id: Hospital ID string
-        **kwargs: Additional hospital fields (name, region, capacity)
-    
-    Returns:
-        Hospital instance
-    """
+    """Get existing hospital or create new one."""
     hospital = get_hospital_by_id(db, hospital_id)
     if hospital:
         return hospital
-    
+
     hospital = Hospital(
         hospital_id=hospital_id,
         name=kwargs.get("name"),
         region=kwargs.get("region"),
-        capacity=kwargs.get("capacity")
+        capacity=kwargs.get("capacity"),
+        population=kwargs.get("population", 0),
+        population_density=kwargs.get("population_density", 0.0),
+        elderly_ratio=kwargs.get("elderly_ratio", 0.0),
+        icu_capacity=kwargs.get("icu_capacity", 0),
     )
     db.add(hospital)
-    db.flush()  # Flush to get ID without committing
+    db.flush()
     return hospital
 
 
@@ -58,9 +58,21 @@ def get_all_hospitals(db: Session, skip: int = 0, limit: int = 100) -> List[Hosp
     return db.query(Hospital).offset(skip).limit(limit).all()
 
 
+def get_hospital_count(db: Session) -> int:
+    """Get total number of hospitals."""
+    return db.query(func.count(Hospital.id)).scalar() or 0
+
+
+def get_all_hospital_ids(db: Session) -> List[str]:
+    """Get all hospital_id strings."""
+    rows = db.query(Hospital.hospital_id).order_by(Hospital.hospital_id).all()
+    return [r[0] for r in rows]
+
+
 # ============================================================================
 # ForecastRun CRUD
 # ============================================================================
+
 
 def create_forecast_run(
     db: Session,
@@ -69,33 +81,21 @@ def create_forecast_run(
     total_forecasts: int,
     inference_time_seconds: Optional[float] = None,
     model_version: Optional[str] = None,
-    user_id: Optional[UUID] = None
+    user_id: Optional[UUID] = None,
+    signal_date_used: Optional[date] = None,
 ) -> ForecastRun:
-    """
-    Create a new forecast run record.
-    
-    Args:
-        db: Database session
-        hospital_count: Number of hospitals forecasted
-        horizon_count: Number of horizons forecasted
-        total_forecasts: Total number of forecast predictions
-        inference_time_seconds: Time taken for inference
-        model_version: Model version string
-        user_id: Optional user ID
-    
-    Returns:
-        ForecastRun instance
-    """
+    """Create a new forecast run record."""
     forecast_run = ForecastRun(
         user_id=user_id,
         hospital_count=hospital_count,
         horizon_count=horizon_count,
         total_forecasts=total_forecasts,
         inference_time_seconds=inference_time_seconds,
-        model_version=model_version
+        model_version=model_version,
+        signal_date_used=signal_date_used,
     )
     db.add(forecast_run)
-    db.flush()  # Flush to get ID without committing
+    db.flush()
     return forecast_run
 
 
@@ -104,9 +104,15 @@ def get_forecast_run(db: Session, run_id: UUID) -> Optional[ForecastRun]:
     return db.query(ForecastRun).filter(ForecastRun.id == run_id).first()
 
 
+def get_latest_forecast_run(db: Session) -> Optional[ForecastRun]:
+    """Get the most recent forecast run."""
+    return db.query(ForecastRun).order_by(desc(ForecastRun.created_at)).first()
+
+
 # ============================================================================
 # Forecast CRUD
 # ============================================================================
+
 
 def create_forecast(
     db: Session,
@@ -114,53 +120,31 @@ def create_forecast(
     hospital_id: UUID,
     horizon: int,
     prediction: float,
-    forecast_date: date
+    forecast_date: date,
 ) -> Forecast:
-    """
-    Create a single forecast record.
-    
-    Args:
-        db: Database session
-        forecast_run_id: ID of the forecast run
-        hospital_id: UUID of the hospital
-        horizon: Forecast horizon (1-7 days)
-        prediction: Predicted admissions value
-        forecast_date: The date being forecasted
-    
-    Returns:
-        Forecast instance
-    """
+    """Create a single forecast record."""
     forecast = Forecast(
         forecast_run_id=forecast_run_id,
         hospital_id=hospital_id,
         horizon=horizon,
         prediction=prediction,
-        forecast_date=forecast_date
+        forecast_date=forecast_date,
     )
     db.add(forecast)
     return forecast
 
 
 def create_forecasts_batch(
-    db: Session,
-    forecast_run_id: UUID,
-    forecasts_data: List[Dict[str, Any]]
-) -> List[Forecast]:
+    db: Session, forecast_run_id: UUID, forecasts_data: List[Dict[str, Any]]
+) -> None:
     """
-    Create multiple forecast records in a batch.
-    
-    Args:
-        db: Database session
-        forecast_run_id: ID of the forecast run
-        forecasts_data: List of dicts with keys: hospital_id (str), horizon, prediction, forecast_date
-    
-    Returns:
-        List of Forecast instances
+    Create multiple forecast records using UPSERT.
+    Idempotent: ON CONFLICT (hospital_id, forecast_date, horizon) DO UPDATE.
     """
     if not forecasts_data:
-        return []
+        return
 
-    # Build/ensure hospital mapping first so we can upsert forecasts by FK UUID.
+    # Resolve hospital string IDs to UUID FKs
     hospital_id_values = sorted({data["hospital_id"] for data in forecasts_data})
     existing_hospitals = (
         db.query(Hospital)
@@ -203,7 +187,42 @@ def create_forecasts_batch(
     )
     db.execute(on_conflict_stmt)
 
-    return []
+
+def get_precomputed_forecasts(
+    db: Session,
+    run_id: UUID,
+    hospital_ids: Optional[List[str]] = None,
+    horizons: Optional[List[int]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Get forecasts from a specific run, optionally filtered by hospital/horizon.
+    Returns list of dicts ready for JSON serialization.
+    """
+    query = (
+        db.query(Forecast, Hospital.hospital_id)
+        .join(Hospital, Forecast.hospital_id == Hospital.id)
+        .filter(Forecast.forecast_run_id == run_id)
+    )
+
+    if hospital_ids:
+        query = query.filter(Hospital.hospital_id.in_(hospital_ids))
+
+    if horizons:
+        query = query.filter(Forecast.horizon.in_(horizons))
+
+    query = query.order_by(Hospital.hospital_id, Forecast.horizon)
+
+    results = []
+    for forecast, hosp_id in query.all():
+        results.append(
+            {
+                "hospital_id": hosp_id,
+                "horizon": forecast.horizon,
+                "prediction": float(forecast.prediction),
+                "forecast_date": str(forecast.forecast_date),
+            }
+        )
+    return results
 
 
 def get_forecasts(
@@ -213,45 +232,26 @@ def get_forecasts(
     end_date: Optional[date] = None,
     horizon: Optional[int] = None,
     skip: int = 0,
-    limit: int = 100
+    limit: int = 100,
 ) -> List[Forecast]:
-    """
-    Query forecasts with filtering and pagination.
-    
-    Args:
-        db: Database session
-        hospital_id: Filter by hospital ID string
-        start_date: Filter forecasts >= start_date
-        end_date: Filter forecasts <= end_date
-        horizon: Filter by specific horizon (1-7)
-        skip: Pagination offset
-        limit: Pagination limit
-    
-    Returns:
-        List of Forecast instances
-    """
+    """Query forecasts with filtering and pagination."""
     query = db.query(Forecast)
-    
-    # Filter by hospital
+
     if hospital_id:
         hospital = get_hospital_by_id(db, hospital_id)
         if hospital:
             query = query.filter(Forecast.hospital_id == hospital.id)
         else:
-            # Return empty if hospital not found
             return []
-    
-    # Filter by date range
+
     if start_date:
         query = query.filter(Forecast.forecast_date >= start_date)
     if end_date:
         query = query.filter(Forecast.forecast_date <= end_date)
-    
-    # Filter by horizon
+
     if horizon is not None:
         query = query.filter(Forecast.horizon == horizon)
-    
-    # Order by date (newest first) and apply pagination
+
     return query.order_by(desc(Forecast.forecast_date)).offset(skip).limit(limit).all()
 
 
@@ -260,60 +260,118 @@ def get_forecast_count(
     hospital_id: Optional[str] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    horizon: Optional[int] = None
+    horizon: Optional[int] = None,
 ) -> int:
-    """
-    Get total count of forecasts matching filters.
-    
-    Args:
-        db: Database session
-        hospital_id: Filter by hospital ID string
-        start_date: Filter forecasts >= start_date
-        end_date: Filter forecasts <= end_date
-        horizon: Filter by specific horizon (1-7)
-    
-    Returns:
-        Total count
-    """
+    """Get total count of forecasts matching filters."""
     query = db.query(func.count(Forecast.id))
-    
-    # Filter by hospital
+
     if hospital_id:
         hospital = get_hospital_by_id(db, hospital_id)
         if hospital:
             query = query.filter(Forecast.hospital_id == hospital.id)
         else:
             return 0
-    
-    # Filter by date range
+
     if start_date:
         query = query.filter(Forecast.forecast_date >= start_date)
     if end_date:
         query = query.filter(Forecast.forecast_date <= end_date)
-    
-    # Filter by horizon
+
     if horizon is not None:
         query = query.filter(Forecast.horizon == horizon)
-    
+
     return query.scalar() or 0
 
 
 # ============================================================================
-# AdmissionHistory CRUD (for future use)
+# AdmissionHistory CRUD
 # ============================================================================
 
+
 def create_admission_history(
-    db: Session,
-    hospital_id: UUID,
-    date: date,
-    admissions: int
+    db: Session, hospital_id: UUID, record_date: date, admissions: int
 ) -> AdmissionHistory:
     """Create admission history record."""
     admission = AdmissionHistory(
-        hospital_id=hospital_id,
-        date=date,
-        admissions=admissions
+        hospital_id=hospital_id, date=record_date, admissions=admissions
     )
     db.add(admission)
     return admission
 
+
+def upsert_admission_history_batch(
+    db: Session, records: List[Dict[str, Any]]
+) -> int:
+    """
+    Bulk UPSERT admission history. Idempotent.
+    Each record: { hospital_uuid: UUID, date: date, admissions: int }
+    """
+    if not records:
+        return 0
+
+    rows = [
+        {
+            "id": uuid.uuid4(),
+            "hospital_id": r["hospital_uuid"],
+            "date": r["date"],
+            "admissions": r["admissions"],
+            "created_at": datetime.utcnow(),
+        }
+        for r in records
+    ]
+
+    insert_stmt = insert(AdmissionHistory).values(rows)
+    upsert = insert_stmt.on_conflict_do_update(
+        index_elements=["hospital_id", "date"],
+        set_={"admissions": insert_stmt.excluded.admissions},
+    )
+    result = db.execute(upsert)
+    return int(result.rowcount or 0)
+
+
+def get_admission_history_for_hospitals(
+    db: Session,
+    hospital_ids: Optional[List[str]] = None,
+    days: int = 30,
+) -> List[Dict[str, Any]]:
+    """Get admission history for hospitals, last N days relative to latest data."""
+    from sqlalchemy import func as sa_func
+
+    # Use latest date in DB (not today) so it works with historical data too
+    max_date = db.query(sa_func.max(AdmissionHistory.date)).scalar()
+    if max_date is None:
+        return []
+    cutoff = max_date - timedelta(days=days)
+
+    query = (
+        db.query(AdmissionHistory, Hospital.hospital_id)
+        .join(Hospital, AdmissionHistory.hospital_id == Hospital.id)
+        .filter(AdmissionHistory.date >= cutoff)
+    )
+
+    if hospital_ids:
+        query = query.filter(Hospital.hospital_id.in_(hospital_ids))
+
+    query = query.order_by(Hospital.hospital_id, AdmissionHistory.date)
+
+    results = []
+    for admission, hosp_id in query.all():
+        results.append(
+            {
+                "hospital_id": hosp_id,
+                "date": str(admission.date),
+                "admissions": admission.admissions,
+            }
+        )
+    return results
+
+
+# ============================================================================
+# ExternalSignal queries
+# ============================================================================
+
+
+def get_latest_signal_date(db: Session) -> Optional[date]:
+    """Get the most recent external signal date across all hospitals."""
+    result = db.query(func.max(ExternalSignal.date)).scalar()
+    return result

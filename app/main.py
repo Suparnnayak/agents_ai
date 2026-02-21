@@ -1,5 +1,16 @@
-"""Main FastAPI application instance for the Hospital Forecast API."""
+"""
+Hospital Forecast API — DB-Driven Architecture
 
+Production FastAPI application.
+- NO CSV dependency
+- Forecasts are precomputed by daily_forecast_job.py
+- All data lives in PostgreSQL (Neon)
+- Read-only forecast endpoints
+- Vercel-serverless compatible (no file writes in requests,
+  no background schedulers, stateless handlers)
+"""
+
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
@@ -11,15 +22,20 @@ from datetime import datetime, date, timedelta
 from collections import defaultdict
 import subprocess
 from sqlalchemy.orm import Session
+from sqlalchemy import desc, func, text
 
-import pandas as pd
-from forecast_system.inference import forecast, forecast_to_json
-from forecast_system.ingestion import load_data
 from forecast_system.model_bundle import ModelBundle
 from forecast_system.utils import get_logger
 from database.session import get_db
 from database import crud
-from database.models import User
+from database.models import (
+    User,
+    Hospital,
+    Forecast,
+    ForecastRun,
+    AdmissionHistory,
+    ExternalSignal,
+)
 from app.auth.router import router as auth_router
 from app.dependencies import get_current_user, require_admin
 from app.services.external_data_service import (
@@ -30,22 +46,86 @@ from app.services.external_data_service import (
 
 logger = get_logger(__name__)
 
-app = FastAPI(
-    title="Hospital Forecast API",
-    description="7-day hospital admissions forecasting system",
-    version="1.0.0",
+# ---------------------------------------------------------------------------
+# Module-level state — initialised once per cold start (Vercel or local)
+# ---------------------------------------------------------------------------
+MODEL_PATH = os.getenv(
+    "MODEL_PATH", "models/forecast_system/lightgbm_final.pkl"
 )
 
-# CORS middleware — allow frontend origins
+bundle: Optional[ModelBundle] = None
+model_loaded_at: Optional[str] = None
+model_path_used: Optional[str] = None
+
+
+def _load_model_bundle() -> None:
+    """Load the model bundle from disk (called once at cold start)."""
+    global bundle, model_loaded_at, model_path_used
+
+    project_root = Path(__file__).resolve().parent.parent
+
+    candidate_paths = [
+        Path(MODEL_PATH),                     # explicit / absolute
+        project_root / MODEL_PATH,            # relative to project root
+    ]
+
+    for path in candidate_paths:
+        path_str = str(path)
+        if os.path.exists(path_str):
+            bundle = ModelBundle.load(path_str)
+            model_path_used = path_str
+            model_loaded_at = datetime.now().isoformat()
+            logger.info(f"[OK] Model loaded from: {path_str}")
+            return
+
+    logger.warning("[WARN] Model bundle not found — /model-info will be unavailable")
+
+
+def _init_db_tables() -> None:
+    """Ensure DB tables exist (safe to call repeatedly)."""
+    try:
+        from database.session import init_db
+        init_db()
+        logger.info("[OK] Database initialized")
+    except Exception as exc:
+        logger.warning(f"[WARN] Database initialization skipped: {exc}")
+
+
+# Run once at module-import time so both local uvicorn and Vercel
+# cold-starts get the same behavior without relying on ASGI lifespan.
+_init_db_tables()
+_load_model_bundle()
+
+
+# ---------------------------------------------------------------------------
+# ASGI lifespan (kept for local uvicorn; Mangum uses lifespan="off")
+# ---------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    # startup — already done at module level, nothing extra needed
+    yield
+    # shutdown — nothing to clean up
+
+
+# ---------------------------------------------------------------------------
+# FastAPI application
+# ---------------------------------------------------------------------------
+ALLOWED_ORIGINS = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001",
+).split(",")
+
+app = FastAPI(
+    title="Hospital Forecast API",
+    description="7-day hospital admissions forecasting system — DB-driven architecture",
+    version="2.0.0",
+    lifespan=lifespan,
+)
+
+# CORS — origins driven by ALLOWED_ORIGINS env var
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",
-        "http://localhost:3002",
-        "http://localhost:3003",
-    ],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"],
     allow_headers=["*"],
@@ -56,191 +136,29 @@ app.add_middleware(
 # Include authentication routes
 app.include_router(auth_router)
 
-# Model path
-MODEL_PATH = "models/forecast_system/lightgbm_final.pkl"
-
-# Load model on startup
-bundle = None
-historical_data = None
-model_loaded_at = None
-model_path_used = None
-
-# Rate limiting (simple in-memory)
-rate_limit_store = defaultdict(list)
+# Rate limiting (simple in-memory — resets on each cold start; fine for serverless)
+rate_limit_store: defaultdict = defaultdict(list)
 RATE_LIMIT_REQUESTS = 50
 RATE_LIMIT_WINDOW = 60  # seconds
 
 
-@app.on_event("startup")
-async def load_model():
-    """Load model and historical data on startup."""
-    global bundle, historical_data, model_loaded_at, model_path_used
-
-    try:
-        # Try multiple paths for model
-        model_paths = [
-            MODEL_PATH,
-            Path(__file__).parent.parent / MODEL_PATH,
-            f"../{MODEL_PATH}",
-            Path("/opt/render/project/src") / MODEL_PATH,
-            Path("/opt/render/project") / MODEL_PATH,
-        ]
-
-        model_loaded = False
-        for path in model_paths:
-            path_str = str(path)
-            if os.path.exists(path_str):
-                bundle = ModelBundle.load(path_str)
-                model_path_used = path_str
-                model_loaded_at = datetime.now().isoformat()
-                print(f"[OK] Model loaded from: {path_str}")
-                model_loaded = True
-                break
-
-        if not model_loaded:
-            print(f"Current working directory: {os.getcwd()}")
-            print(f"App file location: {Path(__file__).absolute()}")
-            raise FileNotFoundError(f"Model not found. Tried: {model_paths}")
-
-        # Load historical data
-        data_paths = [
-            "dataset/synthetic_hospital_data.csv",
-            Path(__file__).parent.parent / "dataset/synthetic_hospital_data.csv",
-            Path("/opt/render/project/src") / "dataset/synthetic_hospital_data.csv",
-            Path("/opt/render/project") / "dataset/synthetic_hospital_data.csv",
-        ]
-
-        data_loaded = False
-        for path in data_paths:
-            path_str = str(path)
-            if os.path.exists(path_str):
-                historical_data = load_data(path_str)
-                print(f"[OK] Historical data loaded from: {path_str}")
-                data_loaded = True
-                break
-
-        if not data_loaded:
-            print("[WARN] Historical data not found.")
-            historical_data = None
-
-        # Initialize database (create tables if they don't exist)
-        try:
-            from database.session import init_db
-
-            init_db()
-            print("[OK] Database initialized")
-        except Exception as db_error:
-            print(f"[WARN] Database initialization failed: {db_error}")
-            print("   API will continue without database persistence")
-
-    except Exception as e:
-        print(f"[ERROR] Error loading model: {e}")
-        raise
-
-
-class ForecastRequest(BaseModel):
-    """Request model for forecast endpoint."""
-
-    hospital_ids: Optional[List[str]] = Field(
-        None, description="List of hospital IDs to forecast"
-    )
-    horizons: Optional[List[int]] = Field(
-        [1, 2, 3, 4, 5, 6, 7], description="Forecast horizons in days"
-    )
-
-    @validator("hospital_ids")
-    def validate_hospital_ids(cls, v):
-        """Validate hospital_ids."""
-        if v is not None:
-            if len(v) == 0:
-                raise ValueError("hospital_ids cannot be empty list")
-            # Check for duplicates
-            if len(v) != len(set(v)):
-                raise ValueError("hospital_ids contains duplicates")
-        return v
-
-    @validator("horizons")
-    def validate_horizons(cls, v):
-        """Validate horizons."""
-        if v is None or len(v) == 0:
-            raise ValueError("horizons cannot be empty")
-        # Check for duplicates
-        if len(v) != len(set(v)):
-            raise ValueError("horizons contains duplicates")
-        # Check range
-        for h in v:
-            if h < 1:
-                raise ValueError(f"horizon must be >= 1, got {h}")
-            if h > 7:
-                raise ValueError(f"horizon must be <= 7, got {h}")
-        return sorted(v)  # Return sorted for consistency
-
-
-class HealthResponse(BaseModel):
-    """Health check response."""
-
-    model_config = {"protected_namespaces": ()}
-
-    status: str
-    model_loaded: bool
-    data_loaded: bool
-
-
-class ModelInfoResponse(BaseModel):
-    """Model information response."""
-
-    model_config = {"protected_namespaces": ()}
-
-    version: str = "1.0.0"
-    trained_at: Optional[str] = None
-    feature_count: int
-    feature_columns: List[str]
-    path: Optional[str] = None
-    git_commit: Optional[str] = None
-
-
-@app.get("/")
-def root():
-    """Root endpoint."""
-    return {
-        "status": "Hospital Forecast API running",
-        "version": "1.0.0",
-        "endpoints": {
-            "/health": "Health check",
-            "/predict": "Generate forecasts (POST)",
-            "/docs": "API documentation",
-        },
-    }
-
-
-@app.get("/health", response_model=HealthResponse)
-def health_check():
-    """Health check endpoint."""
-    return HealthResponse(
-        status="healthy" if bundle is not None else "unhealthy",
-        model_loaded=bundle is not None,
-        data_loaded=historical_data is not None,
-    )
+# ============================================================================
+# UTILITY
+# ============================================================================
 
 
 def check_rate_limit(request: Request):
     """Simple rate limiting middleware."""
     client_ip = request.client.host
     now = time.time()
-
-    # Clean old entries
     rate_limit_store[client_ip] = [
         ts for ts in rate_limit_store[client_ip] if now - ts < RATE_LIMIT_WINDOW
     ]
-
-    # Check limit
     if len(rate_limit_store[client_ip]) >= RATE_LIMIT_REQUESTS:
         raise HTTPException(
             status_code=429,
-            detail=f"Rate limit exceeded: {RATE_LIMIT_REQUESTS} requests per {RATE_LIMIT_WINDOW} seconds",
+            detail=f"Rate limit exceeded: {RATE_LIMIT_REQUESTS} requests per {RATE_LIMIT_WINDOW}s",
         )
-
-    # Record request
     rate_limit_store[client_ip].append(now)
     return True
 
@@ -261,6 +179,227 @@ def get_git_commit() -> Optional[str]:
     return None
 
 
+# ============================================================================
+# SCHEMAS
+# ============================================================================
+
+
+class ForecastRequest(BaseModel):
+    """Request model for /predict (backward-compatible)."""
+
+    hospital_ids: Optional[List[str]] = Field(
+        None, description="List of hospital IDs to forecast"
+    )
+    horizons: Optional[List[int]] = Field(
+        [1, 2, 3, 4, 5, 6, 7], description="Forecast horizons in days"
+    )
+
+    @validator("hospital_ids")
+    def validate_hospital_ids(cls, v):
+        if v is not None:
+            if len(v) == 0:
+                raise ValueError("hospital_ids cannot be empty list")
+            if len(v) != len(set(v)):
+                raise ValueError("hospital_ids contains duplicates")
+        return v
+
+    @validator("horizons")
+    def validate_horizons(cls, v):
+        if v is None or len(v) == 0:
+            raise ValueError("horizons cannot be empty")
+        if len(v) != len(set(v)):
+            raise ValueError("horizons contains duplicates")
+        for h in v:
+            if h < 1:
+                raise ValueError(f"horizon must be >= 1, got {h}")
+            if h > 7:
+                raise ValueError(f"horizon must be <= 7, got {h}")
+        return sorted(v)
+
+
+class HealthResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    status: str
+    model_loaded: bool
+    db_connected: bool
+
+
+class ModelInfoResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    version: str = "1.0.0"
+    trained_at: Optional[str] = None
+    feature_count: int
+    feature_columns: List[str]
+    path: Optional[str] = None
+    git_commit: Optional[str] = None
+
+
+class SystemStatusResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    model_version: Optional[str] = None
+    last_forecast_run: Optional[str] = None
+    last_signal_update: Optional[str] = None
+    hospitals_count: int = 0
+
+
+class ExternalSignalsTaskResponse(BaseModel):
+    status: str
+    hospitals_total: int
+    processed: int
+    failed: int
+    upserted: int
+
+
+# ============================================================================
+# BASIC ENDPOINTS
+# ============================================================================
+
+
+@app.get("/")
+def root():
+    """Root endpoint."""
+    return {
+        "status": "Hospital Forecast API running",
+        "version": "2.0.0",
+        "architecture": "DB-driven, precomputed forecasts",
+        "endpoints": {
+            "/health": "Health check",
+            "/hospitals": "List hospitals",
+            "/forecast/latest": "Latest precomputed forecasts (GET)",
+            "/forecast/history": "Admission history (GET)",
+            "/system/status": "System status (GET)",
+            "/predict": "Precomputed forecasts (POST, backward-compatible)",
+            "/docs": "API documentation",
+        },
+    }
+
+
+@app.get("/health", response_model=HealthResponse)
+def health_check(db: Session = Depends(get_db)):
+    """Health check endpoint."""
+    db_ok = False
+    try:
+        db.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception:
+        pass
+
+    return HealthResponse(
+        status="healthy" if db_ok else "degraded",
+        model_loaded=bundle is not None,
+        db_connected=db_ok,
+    )
+
+
+# ============================================================================
+# HOSPITALS (from DB, not CSV)
+# ============================================================================
+
+
+@app.get("/hospitals")
+def list_hospitals(db: Session = Depends(get_db)):
+    """List all available hospitals from database."""
+    hospital_ids = crud.get_all_hospital_ids(db)
+    return {"hospitals": hospital_ids, "count": len(hospital_ids)}
+
+
+# ============================================================================
+# FORECAST ENDPOINTS (read-only, precomputed)
+# ============================================================================
+
+
+@app.get("/forecast/latest")
+def forecast_latest(
+    hospitals: Optional[str] = Query(
+        None, description="Comma-separated hospital IDs (e.g. HOSP_1,HOSP_2)"
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    GET /forecast/latest — returns precomputed forecasts from the latest run.
+    """
+    latest_run = crud.get_latest_forecast_run(db)
+    if not latest_run:
+        raise HTTPException(
+            status_code=404,
+            detail="No forecast runs found. Run daily_forecast_job first.",
+        )
+
+    hospital_ids = None
+    if hospitals:
+        hospital_ids = [h.strip() for h in hospitals.split(",") if h.strip()]
+
+    forecasts = crud.get_precomputed_forecasts(
+        db=db,
+        run_id=latest_run.id,
+        hospital_ids=hospital_ids,
+    )
+
+    return {
+        "run_id": str(latest_run.id),
+        "model_version": latest_run.model_version,
+        "created_at": latest_run.created_at.isoformat() if latest_run.created_at else None,
+        "signal_date_used": str(latest_run.signal_date_used) if latest_run.signal_date_used else None,
+        "forecasts": forecasts,
+        "count": len(forecasts),
+    }
+
+
+@app.get("/forecast/history")
+def forecast_history(
+    hospitals: Optional[str] = Query(
+        None, description="Comma-separated hospital IDs"
+    ),
+    days: int = Query(30, ge=1, le=365, description="Number of days of history"),
+    db: Session = Depends(get_db),
+):
+    """
+    GET /forecast/history — returns admission history from the database.
+    """
+    hospital_ids = None
+    if hospitals:
+        hospital_ids = [h.strip() for h in hospitals.split(",") if h.strip()]
+
+    history = crud.get_admission_history_for_hospitals(
+        db=db, hospital_ids=hospital_ids, days=days
+    )
+
+    return {"history": history, "count": len(history), "days": days}
+
+
+@app.get("/system/status", response_model=SystemStatusResponse)
+def system_status(db: Session = Depends(get_db)):
+    """
+    GET /system/status — returns system health summary.
+    """
+    # Latest forecast run
+    latest_run = crud.get_latest_forecast_run(db)
+    last_run_str = None
+    model_version = None
+    if latest_run:
+        last_run_str = latest_run.created_at.isoformat() if latest_run.created_at else None
+        model_version = latest_run.model_version
+
+    # Latest external signal date
+    signal_date = crud.get_latest_signal_date(db)
+    signal_str = str(signal_date) if signal_date else None
+
+    # Hospital count
+    hosp_count = crud.get_hospital_count(db)
+
+    return SystemStatusResponse(
+        model_version=model_version,
+        last_forecast_run=last_run_str,
+        last_signal_update=signal_str,
+        hospitals_count=hosp_count,
+    )
+
+
+# ============================================================================
+# /predict — BACKWARD-COMPATIBLE (returns precomputed data, no live inference)
+# ============================================================================
+
+
 @app.post("/predict")
 def predict(
     request: ForecastRequest,
@@ -269,206 +408,77 @@ def predict(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Generate hospital admissions forecasts.
+    POST /predict — Returns precomputed forecasts (backward-compatible).
+
+    No live inference. Data comes from the latest forecast run in the DB.
     """
-    # Start timing
     start_time = time.time()
 
-    if bundle is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
-
-    if historical_data is None:
-        raise HTTPException(status_code=503, detail="Historical data not loaded")
-
-    try:
-        # STRICT INPUT VALIDATION
-        available_hospitals = set(historical_data["hospital_id"].unique().tolist())
-
-        # Validate hospital_ids if provided
-        if request.hospital_ids is not None:
-            if len(request.hospital_ids) == 0:
-                raise HTTPException(
-                    status_code=400, detail="hospital_ids cannot be empty list"
-                )
-
-            # STRICT: Max hospitals per request limit
-            MAX_HOSPITALS_PER_REQUEST = 20
-            if len(request.hospital_ids) > MAX_HOSPITALS_PER_REQUEST:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Too many hospitals requested: {len(request.hospital_ids)}. "
-                        f"Maximum allowed: {MAX_HOSPITALS_PER_REQUEST}"
-                    ),
-                )
-
-            # Check for unknown hospitals
-            requested_hospitals = set(request.hospital_ids)
-            unknown_hospitals = requested_hospitals - available_hospitals
-
-            if unknown_hospitals:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Unknown hospital_ids: {sorted(unknown_hospitals)}. "
-                        f"Available: {sorted(available_hospitals)}"
-                    ),
-                )
-
-        # Validate horizons
-        horizons = (
-            sorted(request.horizons)
-            if request.horizons
-            else [1, 2, 3, 4, 5, 6, 7]
+    # Get latest forecast run
+    latest_run = crud.get_latest_forecast_run(db)
+    if not latest_run:
+        raise HTTPException(
+            status_code=503,
+            detail="No precomputed forecasts available. Waiting for daily forecast job.",
         )
 
-        # Filter by hospital_ids if provided (deep copy to prevent mutation)
-        raw_df = historical_data.copy(deep=True)
-        hospital_count = len(available_hospitals)
+    # Validate hospital_ids against DB
+    available_hospitals = set(crud.get_all_hospital_ids(db))
+    if not available_hospitals:
+        raise HTTPException(status_code=503, detail="No hospitals in database")
 
-        if request.hospital_ids:
-            raw_df = raw_df[
-                raw_df["hospital_id"].isin(request.hospital_ids)
-            ].copy(deep=True)
-            hospital_count = len(request.hospital_ids)
-
-        # Validate filtered data
-        if raw_df.empty:
+    requested_hospital_ids = request.hospital_ids
+    if requested_hospital_ids:
+        unknown = set(requested_hospital_ids) - available_hospitals
+        if unknown:
             raise HTTPException(
                 status_code=400,
-                detail=f"No data found for hospitals: {request.hospital_ids}",
+                detail=f"Unknown hospital_ids: {sorted(unknown)}. Available: {sorted(available_hospitals)}",
             )
+    else:
+        requested_hospital_ids = sorted(available_hospitals)
 
-        # Generate forecasts (pass deep copy, never shared object)
-        target_hospital_ids = sorted(raw_df["hospital_id"].unique().tolist())
-        latest_external_signals = get_latest_external_signals_by_hospital(
-            db=db,
-            hospital_ids=target_hospital_ids,
-        )
-        forecast_df = forecast(
-            bundle=bundle,
-            raw_df=raw_df.copy(deep=True),
-            horizons=horizons,
-            external_signals_by_hospital=latest_external_signals,
-        )
+    horizons = sorted(request.horizons) if request.horizons else [1, 2, 3, 4, 5, 6, 7]
 
-        # Validate forecast output
-        if forecast_df.empty:
-            raise HTTPException(
-                status_code=500,
-                detail="Forecast generation returned empty results",
-            )
+    # Fetch precomputed forecasts
+    forecasts = crud.get_precomputed_forecasts(
+        db=db,
+        run_id=latest_run.id,
+        hospital_ids=requested_hospital_ids,
+        horizons=horizons,
+    )
 
-        # Calculate inference time
-        inference_time = time.time() - start_time
+    elapsed = time.time() - start_time
 
-        # SAVE FORECASTS TO DATABASE
-        forecast_run_id = None
-        try:
-            # Get last date per hospital from historical data
-            last_dates = {}
-            for hosp_id in forecast_df["hospital_id"].unique():
-                hosp_data = raw_df[raw_df["hospital_id"] == hosp_id]
-                if not hosp_data.empty:
-                    last_date = pd.to_datetime(hosp_data["date"]).max()
-                    last_dates[hosp_id] = last_date.to_pydatetime().date()
+    logger.info(
+        f"Predict (precomputed) | hospitals={len(requested_hospital_ids)} | "
+        f"horizons={len(horizons)} | results={len(forecasts)} | time={elapsed:.3f}s"
+    )
 
-            # Create forecast run record
-            forecast_run = crud.create_forecast_run(
-                db=db,
-                hospital_count=hospital_count,
-                horizon_count=len(horizons),
-                total_forecasts=len(forecast_df),
-                inference_time_seconds=inference_time,
-                model_version="1.0.0",
-                user_id=current_user.id if current_user else None,
-            )
-            forecast_run_id = forecast_run.id
-
-            # Prepare forecast data for batch insert
-            forecasts_data = []
-            for _, row in forecast_df.iterrows():
-                hospital_id_str = str(row["hospital_id"])
-                horizon = int(row["horizon"])
-                prediction = float(row["prediction"])
-
-                # Calculate forecast_date = last_date + horizon days
-                if hospital_id_str in last_dates:
-                    forecast_date = last_dates[hospital_id_str] + timedelta(
-                        days=horizon
-                    )
-                else:
-                    # Fallback: use today + horizon
-                    forecast_date = date.today() + timedelta(days=horizon)
-
-                forecasts_data.append(
-                    {
-                        "hospital_id": hospital_id_str,
-                        "horizon": horizon,
-                        "prediction": prediction,
-                        "forecast_date": forecast_date,
-                    }
-                )
-
-            # Batch create forecasts
-            crud.create_forecasts_batch(
-                db=db,
-                forecast_run_id=forecast_run_id,
-                forecasts_data=forecasts_data,
-            )
-
-            # Commit transaction
-            db.commit()
-
-            logger.info(
-                "Forecasts saved to database | "
-                f"run_id={forecast_run_id} | "
-                f"forecasts={len(forecasts_data)}"
-            )
-
-        except Exception as db_error:
-            # Rollback on database error
-            db.rollback()
-            logger.error(f"Database save failed: {db_error}")
-
-        # Log request metrics (structured logging)
-        logger.info(
-            "Prediction successful | "
-            f"hospitals={hospital_count} | "
-            f"horizons={len(horizons)} | "
-            f"forecasts={len(forecast_df)} | "
-            f"inference_time={inference_time:.3f}s"
-        )
-
-        # Convert to JSON format
-        result = forecast_to_json(forecast_df)
-
-        return {
-            "status": "success",
-            "forecasts": result["forecasts"],
-            "count": len(result["forecasts"]),
-            "metadata": {
-                "hospitals_requested": hospital_count,
-                "horizons_requested": len(horizons),
-                "inference_time_seconds": round(inference_time, 3),
-                "forecast_run_id": str(forecast_run_id) if forecast_run_id else None,
-            },
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        inference_time = time.time() - start_time
-        logger.exception(
-            "Prediction error | "
-            f"hospitals={hospital_count if 'hospital_count' in locals() else 'unknown'} | "
-            f"horizons={len(horizons) if 'horizons' in locals() else 'unknown'} | "
-            f"inference_time={inference_time:.3f}s"
-        )
-        raise HTTPException(status_code=500, detail="Internal prediction error")
+    return {
+        "status": "success",
+        "forecasts": forecasts,
+        "count": len(forecasts),
+        "metadata": {
+            "hospitals_requested": len(requested_hospital_ids),
+            "horizons_requested": len(horizons),
+            "inference_time_seconds": round(elapsed, 3),
+            "forecast_run_id": str(latest_run.id),
+            "source": "precomputed",
+        },
+    }
 
 
-@app.get("/model-info", response_model=ModelInfoResponse, dependencies=[Depends(require_admin)])
+# ============================================================================
+# MODEL INFO
+# ============================================================================
+
+
+@app.get(
+    "/model-info",
+    response_model=ModelInfoResponse,
+    dependencies=[Depends(require_admin)],
+)
 def model_info():
     """Get model information."""
     if bundle is None:
@@ -484,22 +494,12 @@ def model_info():
     )
 
 
-@app.get("/hospitals")
-def list_hospitals():
-    """List all available hospitals."""
-    if historical_data is None:
-        raise HTTPException(status_code=503, detail="Historical data not loaded")
-
-    hospitals = sorted(historical_data["hospital_id"].unique().tolist())
-    return {
-        "hospitals": hospitals,
-        "count": len(hospitals),
-    }
+# ============================================================================
+# STORED FORECASTS BROWSER (pagination)
+# ============================================================================
 
 
 class ForecastResponse(BaseModel):
-    """Forecast response model."""
-
     id: str
     hospital_id: str
     horizon: int
@@ -509,41 +509,23 @@ class ForecastResponse(BaseModel):
 
 
 class ForecastsListResponse(BaseModel):
-    """Forecasts list response with pagination."""
-
     forecasts: List[ForecastResponse]
     total: int
     skip: int
     limit: int
 
 
-class ExternalSignalsTaskResponse(BaseModel):
-    status: str
-    hospitals_total: int
-    processed: int
-    failed: int
-    upserted: int
-
-
 @app.get("/forecasts", response_model=ForecastsListResponse)
 def get_forecasts(
     hospital_id: Optional[str] = Query(None, description="Filter by hospital ID"),
-    start_date: Optional[date] = Query(
-        None, description="Filter forecasts >= start_date (YYYY-MM-DD)"
-    ),
-    end_date: Optional[date] = Query(
-        None, description="Filter forecasts <= end_date (YYYY-MM-DD)"
-    ),
-    horizon: Optional[int] = Query(
-        None, ge=1, le=7, description="Filter by horizon (1-7)"
-    ),
-    skip: int = Query(0, ge=0, description="Pagination offset"),
-    limit: int = Query(100, ge=1, le=1000, description="Pagination limit (max 1000)"),
+    start_date: Optional[date] = Query(None, description="Filter >= start_date"),
+    end_date: Optional[date] = Query(None, description="Filter <= end_date"),
+    horizon: Optional[int] = Query(None, ge=1, le=7, description="Filter by horizon"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
-    """
-    Get stored forecasts with filtering and pagination.
-    """
+    """Get stored forecasts with filtering and pagination."""
     try:
         forecasts = crud.get_forecasts(
             db=db,
@@ -566,7 +548,6 @@ def get_forecasts(
         forecast_responses = []
         for f in forecasts:
             hospital_id_str = f.hospital.hospital_id if f.hospital else "unknown"
-
             forecast_responses.append(
                 ForecastResponse(
                     id=str(f.id),
@@ -579,18 +560,16 @@ def get_forecasts(
             )
 
         return ForecastsListResponse(
-            forecasts=forecast_responses,
-            total=total,
-            skip=skip,
-            limit=limit,
+            forecasts=forecast_responses, total=total, skip=skip, limit=limit
         )
-
     except Exception as e:
         logger.exception(f"Error retrieving forecasts: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Error retrieving forecasts",
-        )
+        raise HTTPException(status_code=500, detail="Error retrieving forecasts")
+
+
+# ============================================================================
+# EXTERNAL SIGNALS TASK
+# ============================================================================
 
 
 @app.post(
@@ -599,9 +578,7 @@ def get_forecasts(
     dependencies=[Depends(require_admin)],
 )
 def run_fetch_external_signals_task(db: Session = Depends(get_db)):
-    """
-    Fetch free external signals for all hospitals and upsert into DB.
-    """
+    """Fetch external signals for all hospitals and upsert into DB."""
     try:
         summary = fetch_and_store_external_signals(db)
         return ExternalSignalsTaskResponse(
@@ -614,6 +591,3 @@ def run_fetch_external_signals_task(db: Session = Depends(get_db)):
     except Exception as e:
         logger.exception(f"External signal task failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch external signals")
-
-
-
