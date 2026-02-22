@@ -37,6 +37,7 @@ from database.models import (
     ExternalSignal,
 )
 from app.auth.router import router as auth_router
+from app.agent.router import router as agent_router
 from app.dependencies import get_current_user, require_admin
 from app.services.external_data_service import (
     fetch_and_store_external_signals,
@@ -168,6 +169,9 @@ app.add_middleware(
 
 # Include authentication routes
 app.include_router(auth_router)
+
+# Include agent routes
+app.include_router(agent_router, prefix="/agent", tags=["Agent"])
 
 # Rate limiting (simple in-memory — resets on each cold start; fine for serverless)
 rate_limit_store: defaultdict = defaultdict(list)
@@ -304,6 +308,7 @@ def root():
             "/predict": "Precomputed forecasts (POST, backward-compatible)",
             "/auth/register": "Register new user (POST)",
             "/auth/login": "Login and get JWT (POST)",
+            "/agent/query": "AI-powered forecast explanation (POST, auth required)",
             "/docs": "API documentation",
         },
     }
