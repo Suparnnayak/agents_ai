@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import re
 import time
-from datetime import date, timedelta
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -116,14 +116,12 @@ def fetch_agent_context(db: Session, hospital_code: str) -> Dict[str, Any]:
             for f in rows
         ]
 
-    # 3. Last 14 days admissions
-    cutoff = date.today() - timedelta(days=14)
+    # 3. Most recent 14 admission records
+    #    We fetch the latest 14 rows by date (not by calendar window) so
+    #    the agent always has history even if the data isn't from "today".
     admissions_rows = (
         db.query(AdmissionHistory)
-        .filter(
-            AdmissionHistory.hospital_id == hospital.id,
-            AdmissionHistory.date >= cutoff,
-        )
+        .filter(AdmissionHistory.hospital_id == hospital.id)
         .order_by(desc(AdmissionHistory.date))
         .limit(14)
         .all()
@@ -205,7 +203,7 @@ def build_prompt(context: Dict[str, Any], question: str) -> str:
         f"\n"
         f"--- Forecast (next 7 days) ---\n{forecast_lines}\n"
         f"\n"
-        f"--- Last 14 days admissions ---\n{admission_lines}\n"
+        f"--- Recent admissions (latest 14 records) ---\n{admission_lines}\n"
         f"\n"
         f"--- Latest external signals ---\n{signal_block}\n"
         f"\n"
