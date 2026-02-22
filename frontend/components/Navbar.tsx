@@ -53,9 +53,23 @@ export default function Navbar() {
             <>
               <Link
                 href="/dashboard"
-                className="px-4 py-2 text-sm font-medium text-cyan hover:text-cyan-light transition-colors"
+                className={`px-4 py-2 text-sm font-medium transition-colors ${
+                  pathname === "/dashboard"
+                    ? "text-cyan"
+                    : "text-slate-300 hover:text-cyan"
+                }`}
               >
                 Dashboard
+              </Link>
+              <Link
+                href="/agent"
+                className={`px-4 py-2 text-sm font-medium transition-colors ${
+                  pathname === "/agent"
+                    ? "text-cyan"
+                    : "text-slate-300 hover:text-cyan"
+                }`}
+              >
+                AI Agent
               </Link>
               <button
                 onClick={handleLogout}
