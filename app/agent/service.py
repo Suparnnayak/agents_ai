@@ -15,7 +15,11 @@ import time
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
+from dotenv import load_dotenv
 import httpx
+
+# Ensure .env is loaded even if this module is imported before database.session
+load_dotenv()
 from fastapi import HTTPException, status
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
@@ -32,11 +36,17 @@ from forecast_system.utils import get_logger
 logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Environment
+# Environment — read lazily so python-dotenv has time to load .env
 # ---------------------------------------------------------------------------
-GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama3-70b-8192")
 GROQ_API_URL: str = "https://api.groq.com/openai/v1/chat/completions"
+
+
+def _get_groq_api_key() -> str:
+    return os.getenv("GROQ_API_KEY", "")
+
+
+def _get_groq_model() -> str:
+    return os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 
 # ---------------------------------------------------------------------------
@@ -221,14 +231,17 @@ def call_groq(system_msg: str, user_msg: str) -> tuple[str, float]:
     Returns (analysis_text, inference_seconds).
     Raises HTTPException on failure.
     """
-    if not GROQ_API_KEY:
+    api_key = _get_groq_api_key()
+    model = _get_groq_model()
+
+    if not api_key:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Agent service unavailable: GROQ_API_KEY is not configured.",
         )
 
     payload = {
-        "model": GROQ_MODEL,
+        "model": model,
         "messages": [
             {"role": "system", "content": system_msg},
             {"role": "user", "content": user_msg},
@@ -237,7 +250,7 @@ def call_groq(system_msg: str, user_msg: str) -> tuple[str, float]:
         "max_tokens": 500,
     }
     headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
@@ -270,7 +283,7 @@ def call_groq(system_msg: str, user_msg: str) -> tuple[str, float]:
             )
 
         logger.info(
-            f"[AGENT] Groq response OK | model={GROQ_MODEL} | "
+            f"[AGENT] Groq response OK | model={model} | "
             f"tokens_in={data.get('usage', {}).get('prompt_tokens', '?')} | "
             f"tokens_out={data.get('usage', {}).get('completion_tokens', '?')} | "
             f"time={elapsed}s"
