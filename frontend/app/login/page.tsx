@@ -6,7 +6,8 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 import api, { getApiErrorMessage } from "@/lib/api";
 import { setToken, setUser } from "@/lib/auth";
-import Navbar from "@/components/Navbar";
+import Navbar from "@/components/layout/Navbar";
+import Logo from "@/components/ui/Logo";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -23,7 +24,11 @@ export default function LoginPage() {
     try {
       const res = await api.post("/auth/login", { email, password });
       setToken(res.data.access_token);
-      setUser({ email: res.data.user.email, name: res.data.user.name, role: res.data.user.role });
+      setUser({
+        email: res.data.user.email,
+        name: res.data.user.name,
+        role: res.data.user.role,
+      });
       router.push("/dashboard");
     } catch (err: unknown) {
       setError(getApiErrorMessage(err, "Login failed. Please try again."));
@@ -33,18 +38,26 @@ export default function LoginPage() {
   };
 
   return (
-    <main className="min-h-screen bg-navy grid-overlay">
+    <main className="min-h-screen bg-navy grid-overlay bg-gradient-animated">
       <Navbar />
-      <div className="flex items-center justify-center min-h-screen px-6 py-24">
+      <div className="flex items-center justify-center min-h-screen px-4 py-24">
+        {/* Background glow */}
+        <div className="absolute top-1/3 left-1/2 -translate-x-1/2 w-[400px] h-[400px] rounded-full bg-gradient-radial from-cyan/5 to-transparent blur-3xl pointer-events-none" />
+
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
-          className="w-full max-w-md"
+          className="w-full max-w-md relative"
         >
-          <div className="glass-card rounded-xl p-8">
-            <h1 className="text-2xl font-bold mb-2">Sign In</h1>
-            <p className="text-slate-400 mb-6 text-sm">Access your forecasting dashboard</p>
+          <div className="glass-card rounded-2xl p-8">
+            <div className="flex justify-center mb-6">
+              <Logo size="md" />
+            </div>
+            <h1 className="text-2xl font-bold text-center mb-1">Welcome Back</h1>
+            <p className="text-slate-400 text-center text-sm mb-6">
+              Sign in to access your forecasting dashboard
+            </p>
 
             {error && (
               <motion.div
@@ -66,7 +79,7 @@ export default function LoginPage() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
-                  className="w-full glass-card px-4 py-3 rounded-lg text-off-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan/50 transition-all"
+                  className="input-field"
                   placeholder="you@example.com"
                 />
               </div>
@@ -80,19 +93,15 @@ export default function LoginPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
-                  className="w-full glass-card px-4 py-3 rounded-lg text-off-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan/50 transition-all"
+                  className="input-field"
                   placeholder="••••••••"
                 />
               </div>
 
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full px-4 py-3 bg-gradient-to-r from-cyan to-blue-600 text-white font-medium rounded-lg hover:shadow-lg hover:shadow-cyan/25 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-              >
+              <button type="submit" disabled={loading} className="w-full btn-primary">
                 {loading ? (
                   <span className="inline-flex items-center gap-2">
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <div className="w-4 h-4 border-2 border-navy border-t-transparent rounded-full animate-spin" />
                     Signing in...
                   </span>
                 ) : (
@@ -103,8 +112,8 @@ export default function LoginPage() {
 
             <p className="mt-6 text-center text-sm text-slate-400">
               Don&apos;t have an account?{" "}
-              <Link href="/register" className="text-cyan hover:text-cyan-light transition-colors">
-                Sign up
+              <Link href="/register" className="text-cyan hover:text-cyan-light transition-colors font-medium">
+                Create one
               </Link>
             </p>
           </div>
@@ -113,4 +122,3 @@ export default function LoginPage() {
     </main>
   );
 }
-

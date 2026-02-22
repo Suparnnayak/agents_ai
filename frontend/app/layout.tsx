@@ -2,8 +2,10 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "HospiForecast | AI-Powered Hospital Admission Forecasting",
-  description: "Enterprise-grade ML forecasting for hospital admissions. 7-day predictions with sub-second inference.",
+  title: "HealthFlow AI | AI-Driven Hospital Operations Intelligence",
+  description:
+    "Enterprise-grade AI forecasting platform for hospital admissions. 7-day predictions powered by LightGBM, external signals, and Groq LLM agent reasoning.",
+  icons: { icon: "/favicon.ico" },
 };
 
 export default function RootLayout({
@@ -12,9 +14,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <body>{children}</body>
+    <html lang="en" className="scroll-smooth">
+      <body className="bg-navy text-off-white antialiased">{children}</body>
     </html>
   );
 }
-

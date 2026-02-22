@@ -6,7 +6,8 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 import api, { getApiErrorMessage } from "@/lib/api";
 import { setToken, setUser } from "@/lib/auth";
-import Navbar from "@/components/Navbar";
+import Navbar from "@/components/layout/Navbar";
+import Logo from "@/components/ui/Logo";
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -24,7 +25,11 @@ export default function RegisterPage() {
     try {
       const res = await api.post("/auth/register", { name, email, password });
       setToken(res.data.access_token);
-      setUser({ email: res.data.user.email, name: res.data.user.name, role: res.data.user.role });
+      setUser({
+        email: res.data.user.email,
+        name: res.data.user.name,
+        role: res.data.user.role,
+      });
       router.push("/dashboard");
     } catch (err: unknown) {
       setError(getApiErrorMessage(err, "Registration failed. Please try again."));
@@ -34,18 +39,25 @@ export default function RegisterPage() {
   };
 
   return (
-    <main className="min-h-screen bg-navy grid-overlay">
+    <main className="min-h-screen bg-navy grid-overlay bg-gradient-animated">
       <Navbar />
-      <div className="flex items-center justify-center min-h-screen px-6 py-24">
+      <div className="flex items-center justify-center min-h-screen px-4 py-24">
+        <div className="absolute top-1/3 left-1/2 -translate-x-1/2 w-[400px] h-[400px] rounded-full bg-gradient-radial from-teal/5 to-transparent blur-3xl pointer-events-none" />
+
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
-          className="w-full max-w-md"
+          className="w-full max-w-md relative"
         >
-          <div className="glass-card rounded-xl p-8">
-            <h1 className="text-2xl font-bold mb-2">Create Account</h1>
-            <p className="text-slate-400 mb-6 text-sm">Start forecasting hospital admissions</p>
+          <div className="glass-card rounded-2xl p-8">
+            <div className="flex justify-center mb-6">
+              <Logo size="md" />
+            </div>
+            <h1 className="text-2xl font-bold text-center mb-1">Create Account</h1>
+            <p className="text-slate-400 text-center text-sm mb-6">
+              Start forecasting hospital admissions with AI
+            </p>
 
             {error && (
               <motion.div
@@ -60,14 +72,14 @@ export default function RegisterPage() {
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <label className="block text-xs uppercase tracking-widest text-cyan mb-2 font-medium">
-                  Name
+                  Full Name
                 </label>
                 <input
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   required
-                  className="w-full glass-card px-4 py-3 rounded-lg text-off-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan/50 transition-all"
+                  className="input-field"
                   placeholder="John Doe"
                 />
               </div>
@@ -81,7 +93,7 @@ export default function RegisterPage() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
-                  className="w-full glass-card px-4 py-3 rounded-lg text-off-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan/50 transition-all"
+                  className="input-field"
                   placeholder="you@example.com"
                 />
               </div>
@@ -96,19 +108,15 @@ export default function RegisterPage() {
                   onChange={(e) => setPassword(e.target.value)}
                   required
                   minLength={6}
-                  className="w-full glass-card px-4 py-3 rounded-lg text-off-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan/50 transition-all"
+                  className="input-field"
                   placeholder="••••••••"
                 />
               </div>
 
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full px-4 py-3 bg-gradient-to-r from-cyan to-blue-600 text-white font-medium rounded-lg hover:shadow-lg hover:shadow-cyan/25 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-              >
+              <button type="submit" disabled={loading} className="w-full btn-primary">
                 {loading ? (
                   <span className="inline-flex items-center gap-2">
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <div className="w-4 h-4 border-2 border-navy border-t-transparent rounded-full animate-spin" />
                     Creating account...
                   </span>
                 ) : (
@@ -119,7 +127,7 @@ export default function RegisterPage() {
 
             <p className="mt-6 text-center text-sm text-slate-400">
               Already have an account?{" "}
-              <Link href="/login" className="text-cyan hover:text-cyan-light transition-colors">
+              <Link href="/login" className="text-cyan hover:text-cyan-light transition-colors font-medium">
                 Sign in
               </Link>
             </p>
@@ -129,4 +137,3 @@ export default function RegisterPage() {
     </main>
   );
 }
-

@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import ProtectedRoute from "@/components/ProtectedRoute";
-import Navbar from "@/components/Navbar";
+import Navbar from "@/components/layout/Navbar";
 import api, { getApiErrorMessage } from "@/lib/api";
 
 interface Message {
@@ -93,7 +93,7 @@ function AgentContent() {
   };
 
   return (
-    <main className="min-h-screen bg-navy grid-overlay flex flex-col">
+    <main className="min-h-screen bg-navy grid-overlay bg-gradient-animated flex flex-col">
       <Navbar />
 
       <div className="flex-1 max-w-4xl w-full mx-auto px-4 md:px-8 pt-24 pb-4 flex flex-col">
